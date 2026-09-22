@@ -1,0 +1,13 @@
+streamlit
+pandas
+numpy
+plotly
+openpyxl
+xlrd
+scipy
+statsmodels
+reportlab
+kaleido
+google-genai
+python-dotenv
+joblib
