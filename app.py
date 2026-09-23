@@ -42,6 +42,15 @@ from modules.chart_engine import (
     create_chart
 )
 
+from modules.filter_engine import (
+    ensure_filter_state,
+    apply_filters,
+    capture_chart_selection,
+    clear_sheet_filters,
+    get_filter_summary,
+    add_selection_metadata,
+)
+
 from modules.insight_engine import (
     generate_insights
 )
@@ -1682,6 +1691,47 @@ with tabs[1]:
                 "### 📊 Dashboard Preview"
             )
 
+            # ==================================================
+            # POWER BI-STYLE CROSS-FILTERING
+            # ==================================================
+
+            sheet_filters = ensure_filter_state(
+                st,
+                sheet_index
+            )
+
+            filter_col1, filter_col2 = st.columns([5, 1])
+
+            with filter_col1:
+                if sheet_filters:
+                    st.info(
+                        "🔎 Active dashboard filter: "
+                        + get_filter_summary(sheet_filters)
+                    )
+                else:
+                    st.caption(
+                        "💡 Click a category in any chart to filter the entire dashboard sheet."
+                    )
+
+            with filter_col2:
+                if st.button(
+                    "✖ Clear Filters",
+                    key=f"clear_dashboard_filters_{sheet_index}",
+                    use_container_width=True,
+                    disabled=not bool(sheet_filters)
+                ):
+                    clear_sheet_filters(st, sheet_index)
+                    st.rerun()
+
+            filtered_df = apply_filters(
+                df,
+                sheet_filters
+            )
+
+            st.caption(
+                f"Showing {len(filtered_df):,} of {len(df):,} records"
+            )
+
             ordered_charts = sorted(
                 charts,
                 key=lambda chart:
@@ -1703,11 +1753,13 @@ with tabs[1]:
                     display_index % layout_columns
                 ]:
 
+                    category = chart.get(
+                        "category"
+                    )
+
                     fig = create_chart(
-                        df,
-                        category=chart.get(
-                            "category"
-                        ),
+                        filtered_df,
+                        category=category,
                         metric=chart.get(
                             "metric"
                         ),
@@ -1725,19 +1777,37 @@ with tabs[1]:
                         )
                     )
 
-                    st.plotly_chart(
+                    # Store the category represented by each point so
+                    # Streamlit can turn a chart click into a filter.
+                    add_selection_metadata(
+                        fig,
+                        category
+                    )
+
+                    event = st.plotly_chart(
                         fig,
                         use_container_width=True,
                         key=(
                             f"dashboard_chart_"
                             f"{sheet_index}_"
                             f"{chart.get('chart_id', display_index)}"
-                        )
+                        ),
+                        on_select="rerun",
+                        selection_mode="points"
                     )
+
+                    if capture_chart_selection(
+                        st,
+                        event,
+                        category,
+                        sheet_index
+                    ):
+                        st.rerun()
 
             st.success(
                 f"✅ {sheet['name']} contains "
-                f"{len(charts)} charts."
+                f"{len(charts)} charts. "
+                f"Current records: {len(filtered_df):,}."
             )
 
     st.divider()
