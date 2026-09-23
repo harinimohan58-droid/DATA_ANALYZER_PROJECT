@@ -3,6 +3,7 @@ import re
 import html
 import urllib.parse
 import urllib.request
+import pickle
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -1989,6 +1990,25 @@ with tabs[7]:
 
         try:
 
+            # ==================================================
+            # SAVE DASHBOARD SNAPSHOT FOR dashboard_app.py
+            # ==================================================
+            snapshot_path = reports_dir / "dashboard_snapshot.pkl"
+
+            with open(snapshot_path, "wb") as snapshot_file:
+                pickle.dump(
+                    {
+                        "df": df,
+                        "sheets": st.session_state.sheets,
+                    },
+                    snapshot_file,
+                )
+
+            # ==================================================
+            # INTERACTIVE DASHBOARD URL
+            # ==================================================
+            dashboard_url = "http://localhost:8502"
+
             generate_pdf(
 
                 str(pdf_path),
@@ -2003,7 +2023,9 @@ with tabs[7]:
 
                 st.session_state.recommendations,
 
-                st.session_state.questions
+                st.session_state.questions,
+
+                dashboard_url=dashboard_url
             )
 
             with open(
@@ -2025,6 +2047,18 @@ with tabs[7]:
 
             st.success(
                 "Final report generated successfully."
+            )
+
+            st.markdown(
+                "### 📊 Interactive Dashboard"
+            )
+
+            st.markdown(
+                "[🔗 OPEN STREAMLIT DASHBOARD](http://localhost:8502)"
+            )
+
+            st.caption(
+                "Start dashboard_app.py on port 8502 before opening this link."
             )
 
         except Exception as e:
