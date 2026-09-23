@@ -5,11 +5,6 @@ import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
-import sys
-import socket
-import subprocess
-import pickle
-import time
 
 import streamlit as st
 import pandas as pd
@@ -42,15 +37,6 @@ from modules.chart_engine import (
     create_chart
 )
 
-from modules.filter_engine import (
-    ensure_filter_state,
-    apply_filters,
-    capture_chart_selection,
-    clear_sheet_filters,
-    get_filter_summary,
-    add_selection_metadata,
-)
-
 from modules.insight_engine import (
     generate_insights
 )
@@ -67,6 +53,8 @@ from modules.web_research import (
 from modules.data_context import (
     create_data_context
 )
+
+
 
 from modules.ai_analyst import (
     ask_data_analyst
@@ -100,6 +88,10 @@ def generate_data_questions(df):
         .tolist()
     )
 
+    # ------------------------------------------------------
+    # DATASET OVERVIEW
+    # ------------------------------------------------------
+
     questions.append(
         f"What are the main characteristics of this dataset?"
     )
@@ -108,6 +100,10 @@ def generate_data_questions(df):
         f"Which columns contain the most useful information "
         f"for analysis?"
     )
+
+    # ------------------------------------------------------
+    # CATEGORICAL DATA
+    # ------------------------------------------------------
 
     for column in categorical_columns[:3]:
 
@@ -123,11 +119,19 @@ def generate_data_questions(df):
                 f"How does {metric} vary across {column}?"
             )
 
+    # ------------------------------------------------------
+    # NUMERIC DATA
+    # ------------------------------------------------------
+
     for column in numeric_columns[:3]:
 
         questions.append(
             f"What is the overall pattern of {column}?"
         )
+
+    # ------------------------------------------------------
+    # RELATIONSHIPS BETWEEN NUMERIC VARIABLES
+    # ------------------------------------------------------
 
     if len(numeric_columns) >= 2:
 
@@ -137,6 +141,10 @@ def generate_data_questions(df):
         questions.append(
             f"Is there a relationship between {x} and {y}?"
         )
+
+    # ------------------------------------------------------
+    # DATA QUALITY
+    # ------------------------------------------------------
 
     missing_columns = [
         column
@@ -151,12 +159,20 @@ def generate_data_questions(df):
             "and what should be investigated?"
         )
 
+    # ------------------------------------------------------
+    # DUPLICATES
+    # ------------------------------------------------------
+
     if df.duplicated().sum() > 0:
 
         questions.append(
             "Are there duplicate records in the dataset "
             "and why might they exist?"
         )
+
+    # ------------------------------------------------------
+    # REMOVE DUPLICATES
+    # ------------------------------------------------------
 
     cleaned_questions = []
 
@@ -167,7 +183,6 @@ def generate_data_questions(df):
             cleaned_questions.append(question)
 
     return cleaned_questions[:12]
-
 
 # ==========================================================
 # ONLINE BASIC DATA EXPLANATION
@@ -209,20 +224,13 @@ class _SearchResultParser(HTMLParser):
         if tag == "a" and self._capture_title:
             self._capture_title = False
             if self._current is not None:
-                self._current["title"] = " ".join(
-                    self._title_parts
-                ).strip()
-
+                self._current["title"] = " ".join(self._title_parts).strip()
         if self._capture_snippet and tag in ("a", "div"):
             self._capture_snippet = False
             if self._current is not None:
-                self._current["snippet"] = " ".join(
-                    self._snippet_parts
-                ).strip()
-
+                self._current["snippet"] = " ".join(self._snippet_parts).strip()
                 if self._current.get("title"):
                     self.results.append(self._current)
-
                 self._current = None
 
 
@@ -236,70 +244,41 @@ def _search_web(query, max_results=5):
     try:
         encoded = urllib.parse.urlencode({"q": query})
         url = f"https://html.duckduckgo.com/html/?{encoded}"
-
         request = urllib.request.Request(
             url,
             headers={"User-Agent": "Mozilla/5.0"}
         )
-
-        with urllib.request.urlopen(
-            request,
-            timeout=8
-        ) as response:
-
-            content = response.read().decode(
-                "utf-8",
-                errors="ignore"
-            )
+        with urllib.request.urlopen(request, timeout=8) as response:
+            content = response.read().decode("utf-8", errors="ignore")
 
         parser = _SearchResultParser()
         parser.feed(content)
 
         cleaned = []
         seen = set()
-
         for item in parser.results:
+            title = _clean_text(item.get("title"))
+            snippet = _clean_text(item.get("snippet"))
+            raw_url = item.get("url", "")
 
-            title = _clean_text(
-                item.get("title")
-            )
-
-            snippet = _clean_text(
-                item.get("snippet")
-            )
-
-            raw_url = item.get(
-                "url",
-                ""
-            )
-
-            match = re.search(
-                r"uddg=([^&]+)",
-                raw_url
-            )
-
+            # DuckDuckGo may return a redirect URL.
+            match = re.search(r"uddg=([^&]+)", raw_url)
             if match:
-                raw_url = urllib.parse.unquote(
-                    match.group(1)
-                )
+                raw_url = urllib.parse.unquote(match.group(1))
 
             if not raw_url.startswith("http"):
                 continue
 
             key = raw_url.split("#")[0]
-
             if key in seen:
                 continue
-
             seen.add(key)
 
-            cleaned.append(
-                {
-                    "title": title or "Web source",
-                    "url": raw_url,
-                    "snippet": snippet
-                }
-            )
+            cleaned.append({
+                "title": title or "Web source",
+                "url": raw_url,
+                "snippet": snippet
+            })
 
             if len(cleaned) >= max_results:
                 break
@@ -312,139 +291,47 @@ def _search_web(query, max_results=5):
 
 def _detect_business_domain(df):
     """Identify a likely business domain from column names only."""
-
-    names = " ".join(
-        str(c).lower()
-        for c in df.columns
-    )
+    names = " ".join(str(c).lower() for c in df.columns)
 
     domain_rules = [
-
-        (
-            "Retail / Sales Analytics",
-            [
-                "retail sales",
-                "retail transfers",
-                "warehouse sales",
-                "product",
-                "item",
-                "sales",
-                "quantity",
-                "order"
-            ]
-        ),
-
-        (
-            "Human Resources / Workforce Analytics",
-            [
-                "employee",
-                "attrition",
-                "jobrole",
-                "job role",
-                "department",
-                "salary",
-                "monthlyincome",
-                "overtime",
-                "satisfaction"
-            ]
-        ),
-
-        (
-            "Marketing / Campaign Analytics",
-            [
-                "campaign",
-                "marketing",
-                "conversion",
-                "response",
-                "click",
-                "impression",
-                "lead",
-                "customer"
-            ]
-        ),
-
-        (
-            "Finance / Risk Analytics",
-            [
-                "loan",
-                "credit",
-                "default",
-                "transaction",
-                "fraud",
-                "balance",
-                "interest",
-                "risk",
-                "amount"
-            ]
-        ),
-
-        (
-            "Healthcare Analytics",
-            [
-                "patient",
-                "diagnosis",
-                "hospital",
-                "admission",
-                "discharge",
-                "medical",
-                "treatment",
-                "disease"
-            ]
-        ),
-
-        (
-            "Education Analytics",
-            [
-                "student",
-                "grade",
-                "marks",
-                "score",
-                "attendance",
-                "course",
-                "exam",
-                "education"
-            ]
-        ),
-
-        (
-            "Manufacturing Analytics",
-            [
-                "machine",
-                "defect",
-                "production",
-                "maintenance",
-                "downtime",
-                "quality",
-                "temperature",
-                "pressure"
-            ]
-        ),
-
-        (
-            "Telecom Analytics",
-            [
-                "churn",
-                "tenure",
-                "contract",
-                "internet",
-                "telecom",
-                "monthlycharges",
-                "phone service"
-            ]
-        ),
+        ("Retail / Sales Analytics", [
+            "retail sales", "retail transfers", "warehouse sales",
+            "product", "item", "sales", "quantity", "order"
+        ]),
+        ("Human Resources / Workforce Analytics", [
+            "employee", "attrition", "jobrole", "job role", "department",
+            "salary", "monthlyincome", "overtime", "satisfaction"
+        ]),
+        ("Marketing / Campaign Analytics", [
+            "campaign", "marketing", "conversion", "response",
+            "click", "impression", "lead", "customer"
+        ]),
+        ("Finance / Risk Analytics", [
+            "loan", "credit", "default", "transaction", "fraud",
+            "balance", "interest", "risk", "amount"
+        ]),
+        ("Healthcare Analytics", [
+            "patient", "diagnosis", "hospital", "admission", "discharge",
+            "medical", "treatment", "disease"
+        ]),
+        ("Education Analytics", [
+            "student", "grade", "marks", "score", "attendance",
+            "course", "exam", "education"
+        ]),
+        ("Manufacturing Analytics", [
+            "machine", "defect", "production", "maintenance", "downtime",
+            "quality", "temperature", "pressure"
+        ]),
+        ("Telecom Analytics", [
+            "churn", "tenure", "contract", "internet", "telecom",
+            "monthlycharges", "phone service"
+        ]),
     ]
 
     best_domain = "General Business Analytics"
     best_score = 0
-
     for domain, keywords in domain_rules:
-
-        score = sum(
-            1
-            for keyword in keywords
-            if keyword in names
-        )
-
+        score = sum(1 for keyword in keywords if keyword in names)
         if score > best_score:
             best_domain = domain
             best_score = score
@@ -454,204 +341,86 @@ def _detect_business_domain(df):
 
 def _column_local_explanation(column, dtype):
     """Safe explanation when an exact online definition is not found."""
-
     name = str(column)
-
-    n = (
-        name
-        .lower()
-        .replace("_", " ")
-        .strip()
-    )
+    n = name.lower().replace("_", " ").strip()
 
     known = {
-
-        "year":
-            "Calendar year associated with the record.",
-
-        "month":
-            "Month associated with the record.",
-
-        "supplier":
-            "Supplier or vendor associated with the product or record.",
-
-        "item code":
-            "Identifier used to distinguish a product/item.",
-
-        "item description":
-            "Text description or name of the product/item.",
-
-        "item type":
-            "Category or type assigned to the product/item.",
-
-        "retail sales":
-            "Retail sales quantity/value recorded for the product, depending on the dataset's unit definition.",
-
-        "retail transfers":
-            "Quantity/value associated with transfers to retail locations or operations, depending on the source definition.",
-
-        "warehouse sales":
-            "Sales quantity/value associated with warehouse operations, depending on the source definition.",
-
-        "product":
-            "Product or item associated with the record.",
-
-        "quantity":
-            "Number of units/items associated with the record.",
-
-        "sales":
-            "Sales measure recorded for the transaction, product, period, or business unit.",
-
-        "revenue":
-            "Revenue or monetary sales amount associated with the record.",
-
-        "price":
-            "Price or monetary amount associated with the product or transaction.",
-
-        "customer":
-            "Customer identifier or customer-related information.",
-
-        "order date":
-            "Date on which the order was placed.",
+        "year": "Calendar year associated with the record.",
+        "month": "Month associated with the record.",
+        "supplier": "Supplier or vendor associated with the product or record.",
+        "item code": "Identifier used to distinguish a product/item.",
+        "item description": "Text description or name of the product/item.",
+        "item type": "Category or type assigned to the product/item.",
+        "retail sales": "Retail sales quantity/value recorded for the product, depending on the dataset's unit definition.",
+        "retail transfers": "Quantity/value associated with transfers to retail locations or operations, depending on the source definition.",
+        "warehouse sales": "Sales quantity/value associated with warehouse operations, depending on the source definition.",
+        "product": "Product or item associated with the record.",
+        "quantity": "Number of units/items associated with the record.",
+        "sales": "Sales measure recorded for the transaction, product, period, or business unit.",
+        "revenue": "Revenue or monetary sales amount associated with the record.",
+        "price": "Price or monetary amount associated with the product or transaction.",
+        "customer": "Customer identifier or customer-related information.",
+        "order date": "Date on which the order was placed.",
     }
 
     if n in known:
         return known[n]
 
     if dtype.startswith("datetime"):
-        return (
-            "Date/time field that can be used for "
-            "time-based analysis and trends."
-        )
-
-    if (
-        dtype.startswith("int")
-        or dtype.startswith("float")
-    ):
-        return (
-            "Numeric field that can be summarized, "
-            "compared, grouped, or used as a business metric."
-        )
-
+        return "Date/time field that can be used for time-based analysis and trends."
+    if dtype.startswith("int") or dtype.startswith("float"):
+        return "Numeric field that can be summarized, compared, grouped, or used as a business metric."
     if dtype == "bool":
-        return (
-            "Boolean field representing a true/false "
-            "or yes/no condition."
-        )
-
-    return (
-        "Categorical/text field that can be used to "
-        "group, filter, compare, or describe records."
-    )
+        return "Boolean field representing a true/false or yes/no condition."
+    return "Categorical/text field that can be used to group, filter, compare, or describe records."
 
 
 def generate_basic_data_explanation(df):
     """Research the uploaded dataset/domain online and explain the actual data."""
-
     domain = _detect_business_domain(df)
-
     columns = list(df.columns)
+    column_text = ", ".join(str(c) for c in columns[:12])
 
-    column_text = ", ".join(
-        str(c)
-        for c in columns[:12]
-    )
-
+    # Strong signature searches are used first so well-known public datasets
+    # can be matched to their original documentation.
     queries = []
+    names_lower = " ".join(str(c).lower() for c in columns)
 
-    names_lower = " ".join(
-        str(c).lower()
-        for c in columns
-    )
-
-    if all(
-        x in names_lower
-        for x in [
-            "retail sales",
-            "retail transfers",
-            "warehouse sales"
-        ]
-    ):
-
+    if all(x in names_lower for x in ["retail sales", "retail transfers", "warehouse sales"]):
         queries.append(
-            '"RETAIL SALES" '
-            '"RETAIL TRANSFERS" '
-            '"WAREHOUSE SALES" dataset'
+            '"RETAIL SALES" "RETAIL TRANSFERS" "WAREHOUSE SALES" dataset'
         )
 
-    queries.append(
-        f'"{domain}" dataset column definitions {column_text}'
-    )
-
-    queries.append(
-        f'{domain} data analytics business uses '
-        f'sales product performance inventory'
-    )
+    queries.append(f'"{domain}" dataset column definitions {column_text}')
+    queries.append(f'{domain} data analytics business uses sales product performance inventory')
 
     all_results = []
     seen_urls = set()
-
     for query in queries:
-
-        for result in _search_web(
-            query,
-            max_results=5
-        ):
-
+        for result in _search_web(query, max_results=5):
             if result["url"] not in seen_urls:
-
-                seen_urls.add(
-                    result["url"]
-                )
-
-                all_results.append(
-                    result
-                )
-
+                seen_urls.add(result["url"])
+                all_results.append(result)
             if len(all_results) >= 10:
                 break
-
         if len(all_results) >= 10:
             break
 
+    # Build online evidence from the returned snippets.
     online_text = []
-
     for result in all_results[:5]:
-
         if result.get("snippet"):
-            online_text.append(
-                result["snippet"]
-            )
+            online_text.append(result["snippet"])
 
     exact_source_match = None
-
-    if all(
-        x in names_lower
-        for x in [
-            "retail sales",
-            "retail transfers",
-            "warehouse sales"
-        ]
-    ):
-
+    if all(x in names_lower for x in ["retail sales", "retail transfers", "warehouse sales"]):
         for result in all_results:
-
-            text = (
-                result.get("title", "")
-                + " "
-                + result.get("snippet", "")
-            ).lower()
-
-            if (
-                "warehouse and retail sales" in text
-                or "montgomery" in text
-            ):
-
+            text = (result.get("title", "") + " " + result.get("snippet", "")).lower()
+            if "warehouse and retail sales" in text or "montgomery" in text:
                 exact_source_match = result
                 break
 
     if exact_source_match:
-
         dataset_description = (
             "The uploaded columns closely match the publicly documented "
             "Warehouse and Retail Sales dataset structure. The published "
@@ -661,12 +430,9 @@ def generate_basic_data_explanation(df):
             "The exact meaning and unit should still be treated according "
             "to the identified source documentation."
         )
-
     else:
-
         dataset_description = (
-            f"The uploaded file appears to be a "
-            f"{domain.lower()} dataset "
+            f"The uploaded file appears to be a {domain.lower()} dataset "
             f"with {len(df):,} records and {len(columns)} columns. "
             "The explanation below combines the actual structure of the "
             "uploaded file with publicly available information found online. "
@@ -675,11 +441,8 @@ def generate_basic_data_explanation(df):
         )
 
     business_uses = []
-
     domain_lower = domain.lower()
-
     if "retail" in domain_lower:
-
         business_uses = [
             "Product and sales performance monitoring",
             "Demand and inventory planning",
@@ -687,9 +450,7 @@ def generate_basic_data_explanation(df):
             "Sales trend and seasonal analysis",
             "Merchandising, pricing and promotion decisions",
         ]
-
     elif "human resources" in domain_lower:
-
         business_uses = [
             "Workforce and employee trend analysis",
             "Attrition and retention monitoring",
@@ -697,9 +458,7 @@ def generate_basic_data_explanation(df):
             "Workforce planning",
             "Employee experience analysis",
         ]
-
     elif "marketing" in domain_lower:
-
         business_uses = [
             "Campaign performance analysis",
             "Customer response and conversion analysis",
@@ -707,9 +466,7 @@ def generate_basic_data_explanation(df):
             "Channel comparison",
             "Marketing performance monitoring",
         ]
-
     else:
-
         business_uses = [
             "Business performance monitoring",
             "Trend and group comparison",
@@ -719,71 +476,28 @@ def generate_basic_data_explanation(df):
         ]
 
     column_rows = []
-
     for column in columns:
-
-        dtype = str(
-            df[column].dtype
-        )
-
+        dtype = str(df[column].dtype)
         exact_match = None
+        normalized = str(column).lower().replace("_", " ").strip()
 
-        normalized = (
-            str(column)
-            .lower()
-            .replace("_", " ")
-            .strip()
-        )
-
+        # Use online snippets only when they clearly contain the column name.
         for result in all_results:
-
-            blob = (
-                result.get("title", "")
-                + " "
-                + result.get("snippet", "")
-            ).lower()
-
-            if (
-                normalized
-                and normalized in blob
-                and len(normalized) >= 4
-            ):
-
-                snippet = result.get(
-                    "snippet",
-                    ""
-                )
-
+            blob = (result.get("title", "") + " " + result.get("snippet", "")).lower()
+            if normalized and normalized in blob and len(normalized) >= 4:
+                snippet = result.get("snippet", "")
                 if snippet:
                     exact_match = snippet
                     break
 
-        explanation = (
-            exact_match
-            if exact_match
-            else _column_local_explanation(
-                column,
-                dtype
-            )
-        )
-
-        column_rows.append(
-            {
-                "Column": column,
-                "Data Type": dtype,
-                "Meaning / Explanation": explanation,
-                "Missing Values":
-                    int(
-                        df[column].isna().sum()
-                    ),
-                "Unique Values":
-                    int(
-                        df[column].nunique(
-                            dropna=True
-                        )
-                    ),
-            }
-        )
+        explanation = exact_match if exact_match else _column_local_explanation(column, dtype)
+        column_rows.append({
+            "Column": column,
+            "Data Type": dtype,
+            "Meaning / Explanation": explanation,
+            "Missing Values": int(df[column].isna().sum()),
+            "Unique Values": int(df[column].nunique(dropna=True)),
+        })
 
     return {
         "domain": domain,
@@ -792,15 +506,9 @@ def generate_basic_data_explanation(df):
         "column_rows": column_rows,
         "online_evidence": online_text,
         "sources": all_results[:10],
-        "research_status":
-            (
-                "Online research completed"
-                if all_results
-                else
-                "Online research unavailable; "
-                "local structural explanation used"
-            ),
+        "research_status": "Online research completed" if all_results else "Online research unavailable; local structural explanation used",
     }
+
 
 
 # ==========================================================
@@ -865,6 +573,8 @@ if "recommendations" not in st.session_state:
 if "questions" not in st.session_state:
     st.session_state.questions = []
 
+# Used to prevent Streamlit reruns from rebuilding the dashboard
+# and deleting the user's chart customizations.
 if "data_key" not in st.session_state:
     st.session_state.data_key = None
 
@@ -877,18 +587,13 @@ if "research_sources" not in st.session_state:
 if "basic_data_explanation" not in st.session_state:
     st.session_state.basic_data_explanation = None
 
-if "real_user_result" not in st.session_state:
-    st.session_state.real_user_result = None
-
 
 # ==========================================================
 # HEADER
 # ==========================================================
 
 st.markdown(
-    '<div class="main-title">'
-    '📊 Automated Business Intelligence Platform'
-    '</div>',
+    '<div class="main-title">📊 Automated Business Intelligence Platform</div>',
     unsafe_allow_html=True
 )
 
@@ -933,13 +638,12 @@ with st.sidebar:
 
 if uploaded_file:
 
+    # Include file name, size and sheet count in the key.
+    # The dashboard is regenerated only when the actual upload
+    # or requested sheet count changes.
     current_data_key = (
         uploaded_file.name,
-        getattr(
-            uploaded_file,
-            "size",
-            None
-        ),
+        getattr(uploaded_file, "size", None),
         sheet_count
     )
 
@@ -951,12 +655,11 @@ if uploaded_file:
                 uploaded_file
             )
 
-            df = convert_date_columns(
-                df
-            )
+            df = convert_date_columns(df)
 
             st.session_state.df = df
 
+            # Generate initial dashboard only once for this upload.
             st.session_state.sheets = (
                 generate_sheet_templates(
                     df,
@@ -964,145 +667,76 @@ if uploaded_file:
                 )
             )
 
+            # Give every chart stable metadata used by the editor
+            # and by Streamlit's widget/chart keys.
             for sheet_index, sheet in enumerate(
                 st.session_state.sheets
             ):
-
                 for chart_index, chart in enumerate(
-                    sheet.get(
-                        "charts",
-                        []
-                    )
+                    sheet.get("charts", [])
                 ):
-
                     chart.setdefault(
                         "chart_id",
                         f"sheet{sheet_index}_chart{chart_index}"
                     )
-
                     chart.setdefault(
                         "position",
                         chart_index + 1
                     )
-
                     chart.setdefault(
                         "color",
                         "#2563EB"
                     )
 
+            # Generate insights
             st.session_state.insights = (
-                generate_insights(
-                    df
-                )
+                generate_insights(df)
             )
 
+            # Automatic recommendations are generated from the uploaded data.
+            # Ask Data handles user-entered questions and prediction requests.
             try:
-
-                st.session_state.recommendations = (
-                    generate_recommendations(
-                        df
-                    )
-                )
-
+                st.session_state.recommendations = generate_recommendations(df)
             except Exception as recommendation_error:
-
                 st.session_state.recommendations = []
-
                 st.warning(
-                    f"Recommendation generation failed: "
-                    f"{recommendation_error}"
+                    f"Recommendation generation failed: {recommendation_error}"
                 )
 
+            # Online basic explanation of the uploaded dataset.
             try:
-
-                st.session_state.basic_data_explanation = (
-                    generate_basic_data_explanation(
-                        df
-                    )
-                )
-
-                basic_research = (
-                    st.session_state.basic_data_explanation
-                )
-
+                st.session_state.basic_data_explanation = generate_basic_data_explanation(df)
+                basic_research = st.session_state.basic_data_explanation
                 st.session_state.research_result = {
-                    "domain":
-                        basic_research.get(
-                            "domain",
-                            "General Business Analytics"
-                        ),
-
-                    "analysis":
-                        basic_research.get(
-                            "dataset_description",
-                            "No online explanation available."
-                        ),
+                    "domain": basic_research.get("domain", "General Business Analytics"),
+                    "analysis": basic_research.get("dataset_description", "No online explanation available."),
                 }
-
-                st.session_state.research_sources = (
-                    basic_research.get(
-                        "sources",
-                        []
-                    )
-                )
-
+                st.session_state.research_sources = basic_research.get("sources", [])
             except Exception as research_error:
-
                 st.session_state.basic_data_explanation = {
-                    "domain":
-                        _detect_business_domain(
-                            df
-                        ),
-
-                    "dataset_description":
-                        (
-                            "Online research could not be completed: "
-                            f"{research_error}"
-                        ),
-
+                    "domain": _detect_business_domain(df),
+                    "dataset_description": f"Online research could not be completed: {research_error}",
                     "business_uses": [],
                     "column_rows": [],
                     "online_evidence": [],
                     "sources": [],
-
-                    "research_status":
-                        "Online research failed",
+                    "research_status": "Online research failed",
                 }
-
                 st.session_state.research_result = {
-                    "domain":
-                        st.session_state
-                        .basic_data_explanation[
-                            "domain"
-                        ],
-
-                    "analysis":
-                        st.session_state
-                        .basic_data_explanation[
-                            "dataset_description"
-                        ],
+                    "domain": st.session_state.basic_data_explanation["domain"],
+                    "analysis": st.session_state.basic_data_explanation["dataset_description"],
                 }
-
                 st.session_state.research_sources = []
-
-            st.session_state.data_key = (
-                current_data_key
-            )
+            st.session_state.data_key = current_data_key
 
         except Exception as e:
 
-            st.error(
-                f"Unable to process file: {e}"
-            )
-
+            st.error(f"Unable to process file: {e}")
             st.stop()
 
 else:
 
-    st.info(
-        "👈 Upload your CSV or Excel file from the sidebar."
-    )
-
+    st.info("👈 Upload your CSV or Excel file from the sidebar.")
     st.stop()
 
 
@@ -1111,39 +745,28 @@ else:
 # ==========================================================
 
 df = st.session_state.df
+column_types = detect_column_types(df)
+kpis = calculate_kpis(df)
 
-column_types = detect_column_types(
-    df
-)
-
-kpis = calculate_kpis(
-    df
-)
-
-tabs = st.tabs(
-    [
-        "🏢 Overview",
-        "📊 Dashboard Builder",
-        "📈 Statistics",
-        "🚨 Business Insights",
-        "🔎 Domain Research",
-        "💡 Recommendations",
-        "🤖 Ask Data",
-        "📄 Final Report"
-    ]
-)
+tabs = st.tabs([
+    "🏢 Overview",
+    "📊 Dashboard Builder",
+    "📈 Statistics",
+    "🚨 Business Insights",
+    "🔎 Domain Research",
+    "💡 Recommendations",
+    "🤖 Ask Data",
+    "📄 Final Report"
+])
 
 
-# ==========================================================
 # OVERVIEW
 # ==========================================================
 
 with tabs[0]:
 
     st.markdown(
-        '<div class="section-title">'
-        'Business Overview'
-        '</div>',
+        '<div class="section-title">Business Overview</div>',
         unsafe_allow_html=True
     )
 
@@ -1180,9 +803,7 @@ with tabs[0]:
         "Business-Level Metrics"
     )
 
-    numeric_summary = get_numeric_summary(
-        df
-    )
+    numeric_summary = get_numeric_summary(df)
 
     if not numeric_summary.empty:
 
@@ -1220,9 +841,7 @@ with tabs[0]:
 with tabs[1]:
 
     st.markdown(
-        '<div class="section-title">'
-        '📊 Dashboard Builder'
-        '</div>',
+        '<div class="section-title">📊 Dashboard Builder</div>',
         unsafe_allow_html=True
     )
 
@@ -1232,9 +851,11 @@ with tabs[1]:
         "the chart, metric, dimension, colour, title and position."
     )
 
-    control1, control2, control3 = st.columns(
-        [2, 2, 2]
-    )
+    # ------------------------------------------------------
+    # DASHBOARD CONTROLS
+    # ------------------------------------------------------
+
+    control1, control2, control3 = st.columns([2, 2, 2])
 
     with control1:
 
@@ -1254,22 +875,13 @@ with tabs[1]:
             for si, sheet in enumerate(
                 st.session_state.sheets
             ):
-
                 for ci, chart in enumerate(
-                    sheet.get(
-                        "charts",
-                        []
-                    )
+                    sheet.get("charts", [])
                 ):
-
                     chart["chart_id"] = (
                         f"sheet{si}_chart{ci}"
                     )
-
-                    chart["position"] = (
-                        ci + 1
-                    )
-
+                    chart["position"] = ci + 1
                     chart.setdefault(
                         "color",
                         "#2563EB"
@@ -1293,12 +905,7 @@ with tabs[1]:
     with control3:
 
         total_charts = sum(
-            len(
-                sheet.get(
-                    "charts",
-                    []
-                )
-            )
+            len(sheet.get("charts", []))
             for sheet in st.session_state.sheets
         )
 
@@ -1308,6 +915,10 @@ with tabs[1]:
         )
 
     st.divider()
+
+    # ------------------------------------------------------
+    # SHEET TABS
+    # ------------------------------------------------------
 
     sheet_tabs = st.tabs(
         [
@@ -1336,25 +947,19 @@ with tabs[1]:
                 sheet["description"]
             )
 
-            charts = sheet.get(
-                "charts",
-                []
-            )
+            charts = sheet.get("charts", [])
 
-            for chart_index, chart in enumerate(
-                charts
-            ):
-
+            # Make sure older generated sheets also have the new
+            # customization metadata.
+            for chart_index, chart in enumerate(charts):
                 chart.setdefault(
                     "chart_id",
                     f"sheet{sheet_index}_chart{chart_index}"
                 )
-
                 chart.setdefault(
                     "position",
                     chart_index + 1
                 )
-
                 chart.setdefault(
                     "color",
                     "#2563EB"
@@ -1366,52 +971,47 @@ with tabs[1]:
 
             st.divider()
 
+            # ==================================================
+            # EXPLICIT DASHBOARD CUSTOMIZER
+            # ==================================================
+
             st.markdown(
                 "### 🎨 Customize Dashboard"
             )
 
             chart_labels = [
-                (
-                    f"Chart {i + 1}: "
-                    f"{chart.get('title', 'Business Chart')}"
-                )
-                for i, chart in enumerate(
-                    charts
-                )
+                f"Chart {i + 1}: {chart.get('title', 'Business Chart')}"
+                for i, chart in enumerate(charts)
             ]
 
             selected_chart_index = st.selectbox(
                 "Select a chart to customize",
                 range(len(charts)),
-                format_func=lambda i:
-                    chart_labels[i],
+                format_func=lambda i: chart_labels[i],
                 key=f"selected_chart_{sheet_index}"
             )
 
-            selected_chart = charts[
-                selected_chart_index
-            ]
+            selected_chart = charts[selected_chart_index]
 
-            with st.container(
-                border=True
-            ):
+            with st.container(border=True):
 
                 st.markdown(
-                    f"**Editing:** Chart "
-                    f"{selected_chart_index + 1} — "
+                    f"**Editing:** Chart {selected_chart_index + 1} — "
                     f"{selected_chart.get('title', 'Business Chart')}"
                 )
 
                 edit1, edit2, edit3 = st.columns(3)
+
+                # ----------------------------------------------
+                # METRIC
+                # ----------------------------------------------
 
                 with edit1:
 
                     numeric_options = (
                         df.select_dtypes(
                             include="number"
-                        )
-                        .columns
-                        .tolist()
+                        ).columns.tolist()
                     )
 
                     metric_options = (
@@ -1420,18 +1020,13 @@ with tabs[1]:
                         else ["None"]
                     )
 
-                    current_metric = (
-                        selected_chart.get(
-                            "metric"
-                        )
+                    current_metric = selected_chart.get(
+                        "metric"
                     )
 
                     metric_index = (
-                        metric_options.index(
-                            current_metric
-                        )
-                        if current_metric
-                        in metric_options
+                        metric_options.index(current_metric)
+                        if current_metric in metric_options
                         else 0
                     )
 
@@ -1439,21 +1034,19 @@ with tabs[1]:
                         "📊 Metric",
                         metric_options,
                         index=metric_index,
-                        key=(
-                            f"edit_metric_"
-                            f"{sheet_index}_"
-                            f"{selected_chart_index}"
-                        )
+                        key=f"edit_metric_{sheet_index}_{selected_chart_index}"
                     )
 
                     if new_metric == "None":
                         new_metric = None
 
+                # ----------------------------------------------
+                # DIMENSION
+                # ----------------------------------------------
+
                 with edit2:
 
-                    dimension_options = [
-                        "None"
-                    ] + (
+                    dimension_options = ["None"] + (
                         df.select_dtypes(
                             include=[
                                 "object",
@@ -1461,23 +1054,16 @@ with tabs[1]:
                                 "bool",
                                 "datetime"
                             ]
-                        )
-                        .columns
-                        .tolist()
+                        ).columns.tolist()
                     )
 
-                    current_dimension = (
-                        selected_chart.get(
-                            "category"
-                        )
+                    current_dimension = selected_chart.get(
+                        "category"
                     )
 
                     dimension_index = (
-                        dimension_options.index(
-                            current_dimension
-                        )
-                        if current_dimension
-                        in dimension_options
+                        dimension_options.index(current_dimension)
+                        if current_dimension in dimension_options
                         else 0
                     )
 
@@ -1485,15 +1071,15 @@ with tabs[1]:
                         "🏷️ Dimension",
                         dimension_options,
                         index=dimension_index,
-                        key=(
-                            f"edit_dimension_"
-                            f"{sheet_index}_"
-                            f"{selected_chart_index}"
-                        )
+                        key=f"edit_dimension_{sheet_index}_{selected_chart_index}"
                     )
 
                     if new_dimension == "None":
                         new_dimension = None
+
+                # ----------------------------------------------
+                # CHART TYPE
+                # ----------------------------------------------
 
                 with edit3:
 
@@ -1513,11 +1099,8 @@ with tabs[1]:
                     )
 
                     type_index = (
-                        chart_types.index(
-                            current_type
-                        )
-                        if current_type
-                        in chart_types
+                        chart_types.index(current_type)
+                        if current_type in chart_types
                         else 0
                     )
 
@@ -1525,14 +1108,14 @@ with tabs[1]:
                         "📈 Chart Type",
                         chart_types,
                         index=type_index,
-                        key=(
-                            f"edit_type_"
-                            f"{sheet_index}_"
-                            f"{selected_chart_index}"
-                        )
+                        key=f"edit_type_{sheet_index}_{selected_chart_index}"
                     )
 
                 edit4, edit5, edit6 = st.columns(3)
+
+                # ----------------------------------------------
+                # COLOUR
+                # ----------------------------------------------
 
                 with edit4:
 
@@ -1542,12 +1125,12 @@ with tabs[1]:
                             "color",
                             "#2563EB"
                         ),
-                        key=(
-                            f"edit_color_"
-                            f"{sheet_index}_"
-                            f"{selected_chart_index}"
-                        )
+                        key=f"edit_color_{sheet_index}_{selected_chart_index}"
                     )
+
+                # ----------------------------------------------
+                # TITLE
+                # ----------------------------------------------
 
                 with edit5:
 
@@ -1557,12 +1140,12 @@ with tabs[1]:
                             "title",
                             "Business Chart"
                         ),
-                        key=(
-                            f"edit_title_"
-                            f"{sheet_index}_"
-                            f"{selected_chart_index}"
-                        )
+                        key=f"edit_title_{sheet_index}_{selected_chart_index}"
                     )
+
+                # ----------------------------------------------
+                # POSITION
+                # ----------------------------------------------
 
                 with edit6:
 
@@ -1573,20 +1156,13 @@ with tabs[1]:
                         )
                     )
 
-                    current_position = (
-                        selected_chart.get(
-                            "position",
-                            selected_chart_index + 1
-                        )
+                    current_position = selected_chart.get(
+                        "position",
+                        selected_chart_index + 1
                     )
 
-                    if (
-                        current_position
-                        not in position_options
-                    ):
-                        current_position = (
-                            selected_chart_index + 1
-                        )
+                    if current_position not in position_options:
+                        current_position = selected_chart_index + 1
 
                     new_position = st.selectbox(
                         "↕️ Chart Position",
@@ -1594,11 +1170,7 @@ with tabs[1]:
                         index=position_options.index(
                             current_position
                         ),
-                        key=(
-                            f"edit_position_"
-                            f"{sheet_index}_"
-                            f"{selected_chart_index}"
-                        ),
+                        key=f"edit_position_{sheet_index}_{selected_chart_index}",
                         help=(
                             "Position 1 appears first, position 2 "
                             "second, and so on. If another chart "
@@ -1607,38 +1179,30 @@ with tabs[1]:
                         )
                     )
 
+                # ----------------------------------------------
+                # APPLY / RESET
+                # ----------------------------------------------
+
                 button1, button2 = st.columns(2)
 
                 with button1:
 
                     if st.button(
                         "💾 Apply Chart Changes",
-                        key=(
-                            f"apply_customization_"
-                            f"{sheet_index}_"
-                            f"{selected_chart_index}"
-                        ),
+                        key=f"apply_customization_{sheet_index}_{selected_chart_index}",
                         use_container_width=True,
                         type="primary"
                     ):
 
-                        old_position = (
-                            selected_chart.get(
-                                "position",
-                                selected_chart_index + 1
-                            )
+                        old_position = selected_chart.get(
+                            "position",
+                            selected_chart_index + 1
                         )
 
                         # Swap positions when needed.
                         if new_position != old_position:
                             for other_index, other_chart in enumerate(charts):
-                                if (
-                                    other_index != selected_chart_index
-                                    and other_chart.get(
-                                        "position",
-                                        other_index + 1
-                                    ) == new_position
-                                ):
+                                if other_index != selected_chart_index and other_chart.get("position", other_index + 1) == new_position:
                                     other_chart["position"] = old_position
                                     break
 
@@ -1646,10 +1210,7 @@ with tabs[1]:
                         selected_chart["category"] = new_dimension
                         selected_chart["chart_type"] = new_chart_type
                         selected_chart["color"] = new_color
-                        selected_chart["title"] = (
-                            new_title.strip()
-                            or "Business Chart"
-                        )
+                        selected_chart["title"] = new_title.strip() or "Business Chart"
                         selected_chart["position"] = new_position
 
                         st.success(
@@ -1662,23 +1223,15 @@ with tabs[1]:
 
                     if st.button(
                         "🔄 Reset This Chart",
-                        key=(
-                            f"reset_customization_"
-                            f"{sheet_index}_"
-                            f"{selected_chart_index}"
-                        ),
+                        key=f"reset_customization_{sheet_index}_{selected_chart_index}",
                         use_container_width=True
                     ):
 
                         selected_chart["chart_type"] = "Bar"
-
                         selected_chart["color"] = "#2563EB"
-
                         selected_chart["title"] = (
-                            f"Business Chart "
-                            f"{selected_chart_index + 1}"
+                            f"Business Chart {selected_chart_index + 1}"
                         )
-
                         selected_chart["position"] = (
                             selected_chart_index + 1
                         )
@@ -1687,60 +1240,24 @@ with tabs[1]:
 
             st.divider()
 
+            # ==================================================
+            # FINAL DASHBOARD PREVIEW
+            # ==================================================
+
             st.markdown(
                 "### 📊 Dashboard Preview"
             )
 
-            # ==================================================
-            # POWER BI-STYLE CROSS-FILTERING
-            # ==================================================
-
-            sheet_filters = ensure_filter_state(
-                st,
-                sheet_index
-            )
-
-            filter_col1, filter_col2 = st.columns([5, 1])
-
-            with filter_col1:
-                if sheet_filters:
-                    st.info(
-                        "🔎 Active dashboard filter: "
-                        + get_filter_summary(sheet_filters)
-                    )
-                else:
-                    st.caption(
-                        "💡 Click a category in any chart to filter the entire dashboard sheet."
-                    )
-
-            with filter_col2:
-                if st.button(
-                    "✖ Clear Filters",
-                    key=f"clear_dashboard_filters_{sheet_index}",
-                    use_container_width=True,
-                    disabled=not bool(sheet_filters)
-                ):
-                    clear_sheet_filters(st, sheet_index)
-                    st.rerun()
-
-            filtered_df = apply_filters(
-                df,
-                sheet_filters
-            )
-
-            st.caption(
-                f"Showing {len(filtered_df):,} of {len(df):,} records"
-            )
-
             ordered_charts = sorted(
                 charts,
-                key=lambda chart:
-                    chart.get(
-                        "position",
-                        999
-                    )
+                key=lambda chart: chart.get(
+                    "position",
+                    999
+                )
             )
 
+            # Render the final charts in the selected dashboard
+            # column layout.
             chart_columns = st.columns(
                 layout_columns
             )
@@ -1749,17 +1266,13 @@ with tabs[1]:
                 ordered_charts
             ):
 
-                with chart_columns[
-                    display_index % layout_columns
-                ]:
-
-                    category = chart.get(
-                        "category"
-                    )
+                with chart_columns[display_index % layout_columns]:
 
                     fig = create_chart(
-                        filtered_df,
-                        category=category,
+                        df,
+                        category=chart.get(
+                            "category"
+                        ),
                         metric=chart.get(
                             "metric"
                         ),
@@ -1777,38 +1290,24 @@ with tabs[1]:
                         )
                     )
 
-                    # Store the category represented by each point so
-                    # Streamlit can turn a chart click into a filter.
-                    add_selection_metadata(
-                        fig,
-                        category
-                    )
-
-                    event = st.plotly_chart(
+                    st.plotly_chart(
                         fig,
                         use_container_width=True,
                         key=(
                             f"dashboard_chart_"
                             f"{sheet_index}_"
                             f"{chart.get('chart_id', display_index)}"
-                        ),
-                        on_select="rerun",
-                        selection_mode="points"
+                        )
                     )
-
-                    if capture_chart_selection(
-                        st,
-                        event,
-                        category,
-                        sheet_index
-                    ):
-                        st.rerun()
 
             st.success(
                 f"✅ {sheet['name']} contains "
-                f"{len(charts)} charts. "
-                f"Current records: {len(filtered_df):,}."
+                f"{len(charts)} charts."
             )
+
+    # ------------------------------------------------------
+    # TOTAL CHART COUNT
+    # ------------------------------------------------------
 
     st.divider()
 
@@ -1817,7 +1316,6 @@ with tabs[1]:
         total_charts
     )
 
-
 # ==========================================================
 # STATISTICS
 # ==========================================================
@@ -1825,9 +1323,7 @@ with tabs[1]:
 with tabs[2]:
 
     st.markdown(
-        '<div class="section-title">'
-        'Statistical Analysis'
-        '</div>',
+        '<div class="section-title">Statistical Analysis</div>',
         unsafe_allow_html=True
     )
 
@@ -1884,156 +1380,64 @@ with tabs[2]:
 with tabs[3]:
 
     st.markdown(
-        '<div class="section-title">'
-        '🚨 Business Insights & Barriers'
-        '</div>',
+        '<div class="section-title">🚨 Business Insights & Barriers</div>',
         unsafe_allow_html=True
     )
 
     st.write(
-        "First understand what the uploaded data represents. "
-        "Then review what the actual data shows and which areas "
-        "may become business barriers."
+        "First understand what the uploaded data represents. Then review "
+        "what the actual data shows and which areas may become business barriers."
     )
 
-    basic = st.session_state.get(
-        "basic_data_explanation"
-    )
+    # ======================================================
+    # BASIC DATA EXPLANATION FROM ONLINE RESEARCH
+    # ======================================================
+
+    basic = st.session_state.get("basic_data_explanation")
 
     if basic:
+        st.markdown("## 📚 Basic Data Explanation")
+        st.caption(basic.get("research_status", "Online research status unavailable"))
 
-        st.markdown(
-            "## 📚 Basic Data Explanation"
-        )
+        st.markdown("### 🏢 What is this dataset?")
+        st.info(basic.get("dataset_description", "No dataset explanation is available."))
 
-        st.caption(
-            basic.get(
-                "research_status",
-                "Online research status unavailable"
-            )
-        )
+        st.markdown("### 🔎 Detected Business Domain")
+        st.success(basic.get("domain", "General Business Analytics"))
 
-        st.markdown(
-            "### 🏢 What is this dataset?"
-        )
-
-        st.info(
-            basic.get(
-                "dataset_description",
-                "No dataset explanation is available."
-            )
-        )
-
-        st.markdown(
-            "### 🔎 Detected Business Domain"
-        )
-
-        st.success(
-            basic.get(
-                "domain",
-                "General Business Analytics"
-            )
-        )
-
-        st.markdown(
-            "### 🎯 What can this type of data be used for?"
-        )
-
-        uses = basic.get(
-            "business_uses",
-            []
-        )
-
+        st.markdown("### 🎯 What can this type of data be used for?")
+        uses = basic.get("business_uses", [])
         if uses:
-
             for use in uses:
-                st.write(
-                    f"- {use}"
-                )
-
+                st.write(f"- {use}")
         else:
+            st.write("The available online research did not provide enough domain-specific information.")
 
-            st.write(
-                "The available online research did not provide "
-                "enough domain-specific information."
-            )
-
-        st.markdown(
-            "### 📋 Column-by-Column Explanation"
-        )
-
-        column_rows = basic.get(
-            "column_rows",
-            []
-        )
-
+        st.markdown("### 📋 Column-by-Column Explanation")
+        column_rows = basic.get("column_rows", [])
         if column_rows:
-
-            st.dataframe(
-                pd.DataFrame(
-                    column_rows
-                ),
-                use_container_width=True,
-                hide_index=True
-            )
-
+            st.dataframe(pd.DataFrame(column_rows), use_container_width=True, hide_index=True)
         else:
+            st.info("No column explanations were generated.")
 
-            st.info(
-                "No column explanations were generated."
-            )
-
-        evidence = basic.get(
-            "online_evidence",
-            []
-        )
-
+        evidence = basic.get("online_evidence", [])
         if evidence:
-
-            st.markdown(
-                "### 🌐 What online sources say"
-            )
-
+            st.markdown("### 🌐 What online sources say")
             for item in evidence[:5]:
+                st.write(f"- {item}")
 
-                st.write(
-                    f"- {item}"
-                )
-
-        sources = basic.get(
-            "sources",
-            []
-        )
-
+        sources = basic.get("sources", [])
         if sources:
-
-            st.markdown(
-                "### 📚 Online Sources Used"
-            )
-
+            st.markdown("### 📚 Online Sources Used")
             for source in sources:
-
-                title = source.get(
-                    "title",
-                    "Web Source"
-                )
-
-                url = source.get(
-                    "url",
-                    ""
-                )
-
+                title = source.get("title", "Web Source")
+                url = source.get("url", "")
                 if url:
-
-                    st.markdown(
-                        f"- [{title}]({url})"
-                    )
+                    st.markdown(f"- [{title}]({url})")
 
         st.divider()
 
-    st.markdown(
-        "## 📊 What Your Uploaded Data Shows"
-    )
+    st.markdown("## 📊 What Your Uploaded Data Shows")
 
     insights = st.session_state.insights
 
@@ -2088,154 +1492,43 @@ with tabs[4]:
         unsafe_allow_html=True
     )
 
-    research = st.session_state.get(
-        "research_result",
-        {}
-    )
+    research = st.session_state.research_result
 
     if not research:
 
         st.info(
-            "📂 Upload a dataset to start domain research."
+            "Upload a dataset to start domain research."
         )
 
     else:
 
         domain = research.get(
             "domain",
-            "General Business Analytics"
+            "General Data Analysis"
         )
 
         st.success(
-            f"🏢 Detected Business Domain: {domain}"
+            f"🔎 Detected dataset domain: {domain}"
         )
 
         st.divider()
 
-        # ==================================================
-        # DATASET OVERVIEW
-        # ==================================================
+        st.markdown("### 🌐 Research-Based Analysis")
 
-        st.markdown("## 📊 Dataset Overview")
-
-        overview_col1, overview_col2, overview_col3, overview_col4 = st.columns(4)
-
-        with overview_col1:
-            st.metric("Total Records", f"{len(df):,}")
-
-        with overview_col2:
-            st.metric("Total Columns", f"{len(df.columns):,}")
-
-        with overview_col3:
-            st.metric(
-                "Numeric Columns",
-                f"{len(df.select_dtypes(include='number').columns):,}"
+        st.write(
+            research.get(
+                "analysis",
+                "No research result available."
             )
-
-        with overview_col4:
-            st.metric(
-                "Categorical Columns",
-                f"{len(df.select_dtypes(include=['object', 'category']).columns):,}"
-            )
-
-        st.divider()
-
-        # ==================================================
-        # BASIC DATA EXPLANATION
-        # ==================================================
-
-        basic = st.session_state.get(
-            "basic_data_explanation"
         )
 
-        if basic:
-
-            st.markdown("## 📚 What Is This Dataset?")
-
-            description = basic.get(
-                "dataset_description",
-                "No dataset description is available."
-            )
-
-            st.info(description)
-
-            st.markdown("## 🎯 What Can This Data Be Used For?")
-
-            uses = basic.get("business_uses", [])
-
-            if uses:
-                for use in uses:
-                    st.write(f"✓ {use}")
-            else:
-                st.write(
-                    "The available research did not identify enough "
-                    "domain-specific business uses."
-                )
-
-            st.divider()
-
-            # ----------------------------------------------
-            # COLUMN EXPLANATION
-            # ----------------------------------------------
-
-            st.markdown("## 📋 Column-by-Column Explanation")
-
-            column_rows = basic.get("column_rows", [])
-
-            if column_rows:
-                column_df = pd.DataFrame(column_rows)
-
-                st.dataframe(
-                    column_df,
-                    use_container_width=True,
-                    hide_index=True
-                )
-            else:
-                st.info("No column explanations were generated.")
-
-            st.divider()
-
-            # ----------------------------------------------
-            # ONLINE EVIDENCE
-            # ----------------------------------------------
-
-            evidence = basic.get("online_evidence", [])
-
-            if evidence:
-                st.markdown("## 🌐 What Online Sources Say")
-
-                for item in evidence[:8]:
-                    st.write(f"• {item}")
-
-                st.divider()
-
-        # ==================================================
-        # RESEARCH-BASED ANALYSIS
-        # ==================================================
-
-        st.markdown("## 🔬 Research-Based Analysis")
-
-        analysis = research.get(
-            "analysis",
-            "No research analysis is available."
-        )
-
-        st.write(analysis)
-
-        st.divider()
-
-        # ==================================================
-        # SOURCES
-        # ==================================================
-
-        sources = st.session_state.get(
-            "research_sources",
-            []
-        )
+        sources = st.session_state.research_sources
 
         if sources:
 
-            st.markdown("## 📚 Online Sources Used")
+            st.divider()
+
+            st.markdown("### 📚 Web Sources")
 
             for source in sources:
 
@@ -2250,26 +1543,10 @@ with tabs[4]:
                 )
 
                 if url:
+
                     st.markdown(
                         f"- [{title}]({url})"
                     )
-        else:
-            st.info("No external sources were returned.")
-
-        st.divider()
-
-        # ==================================================
-        # RESEARCH LIMITATION
-        # ==================================================
-
-        st.markdown("### ℹ️ Research Limitation")
-
-        st.caption(
-            "Online research is used to provide business and industry "
-            "context. Where an exact source definition cannot be verified, "
-            "the explanation is presented as an interpretation rather than "
-            "a confirmed definition."
-        )
 
 
 # ==========================================================
@@ -2279,9 +1556,7 @@ with tabs[4]:
 with tabs[5]:
 
     st.markdown(
-        '<div class="section-title">'
-        '💡 Recommendations'
-        '</div>',
+        '<div class="section-title">💡 Recommendations</div>',
         unsafe_allow_html=True
     )
 
@@ -2292,6 +1567,10 @@ with tabs[5]:
     )
 
     st.divider()
+
+    # ======================================================
+    # GENERATE RECOMMENDATIONS
+    # ======================================================
 
     recommendations = st.session_state.get(
         "recommendations",
@@ -2307,6 +1586,10 @@ with tabs[5]:
 
     else:
 
+        # ==================================================
+        # ANALYSIS SUMMARY
+        # ==================================================
+
         st.markdown(
             "## 📊 Analysis Summary"
         )
@@ -2317,6 +1600,10 @@ with tabs[5]:
         )
 
         st.divider()
+
+        # ==================================================
+        # EACH RECOMMENDATION
+        # ==================================================
 
         for index, rec in enumerate(
             recommendations,
@@ -2332,6 +1619,10 @@ with tabs[5]:
                 "Status",
                 "🟡 Needs Investigation"
             )
+
+            # ----------------------------------------------
+            # STATUS
+            # ----------------------------------------------
 
             if "🔴" in status:
 
@@ -2351,6 +1642,10 @@ with tabs[5]:
                     "🟡 Needs Investigation"
                 )
 
+            # ==================================================
+            # TITLE
+            # ==================================================
+
             st.markdown(
                 f"## 📌 {index}. {business_area}"
             )
@@ -2358,6 +1653,10 @@ with tabs[5]:
             st.markdown(
                 f"### {status_title}"
             )
+
+            # ==================================================
+            # DATA EVIDENCE
+            # ==================================================
 
             st.markdown(
                 "### 📊 Data Evidence"
@@ -2371,6 +1670,10 @@ with tabs[5]:
             st.info(
                 evidence
             )
+
+            # ==================================================
+            # DETAILED ANALYSIS
+            # ==================================================
 
             st.markdown(
                 "### 🔎 Detailed Analysis"
@@ -2386,6 +1689,10 @@ with tabs[5]:
                 st.write(
                     detailed_analysis
                 )
+
+            # ==================================================
+            # FACTOR ANALYSIS
+            # ==================================================
 
             factor_analysis = rec.get(
                 "Factor Analysis",
@@ -2403,6 +1710,10 @@ with tabs[5]:
                     language="text"
                 )
 
+            # ==================================================
+            # BUSINESS PROBLEM
+            # ==================================================
+
             st.markdown(
                 "### ⚠️ Business Problem"
             )
@@ -2417,6 +1728,10 @@ with tabs[5]:
                 st.write(
                     business_problem
                 )
+
+            # ==================================================
+            # CORRECTIVE MEASURES
+            # ==================================================
 
             st.markdown(
                 "### 🛠️ Corrective Measures"
@@ -2445,6 +1760,10 @@ with tabs[5]:
                     "required based on the available data."
                 )
 
+            # ==================================================
+            # HOW TO IMPROVE CURRENT WORKING
+            # ==================================================
+
             st.markdown(
                 "### 🔧 How to Improve Current Working"
             )
@@ -2459,6 +1778,10 @@ with tabs[5]:
                 st.write(
                     improvement
                 )
+
+            # ==================================================
+            # WORKFLOW
+            # ==================================================
 
             workflow = rec.get(
                 "Workflow",
@@ -2476,6 +1799,10 @@ with tabs[5]:
                     language="text"
                 )
 
+            # ==================================================
+            # DEVELOPMENT OPPORTUNITY
+            # ==================================================
+
             st.markdown(
                 "### 🚀 Development Opportunity"
             )
@@ -2491,6 +1818,10 @@ with tabs[5]:
                     development
                 )
 
+            # ==================================================
+            # EXPECTED OUTCOME
+            # ==================================================
+
             st.markdown(
                 "### 🎯 Expected Outcome"
             )
@@ -2505,6 +1836,10 @@ with tabs[5]:
                 st.write(
                     expected
                 )
+
+            # ==================================================
+            # ADDITIONAL DATA REQUIRED
+            # ==================================================
 
             additional_data = rec.get(
                 "Additional Data Required",
@@ -2522,6 +1857,10 @@ with tabs[5]:
                     st.write(
                         f"- {item}"
                     )
+
+            # ==================================================
+            # LIMITATION
+            # ==================================================
 
             st.markdown(
                 "### ⚠️ Limitation"
@@ -2542,840 +1881,6 @@ with tabs[5]:
 
             st.divider()
 
-
-# ==========================================================
-# REAL DATA-DRIVEN ASK DATA ENGINE
-# ==========================================================
-
-def _find_column_ci(df, candidates):
-
-    lookup = {
-        str(c).strip().lower(): c
-        for c in df.columns
-    }
-
-    for c in candidates:
-
-        key = str(c).strip().lower()
-
-        if key in lookup:
-            return lookup[key]
-
-    return None
-
-
-def _binary_positive_mask(series):
-
-    values = (
-        series
-        .astype(str)
-        .str.strip()
-        .str.lower()
-    )
-
-    positive = {
-        "yes",
-        "y",
-        "1",
-        "true",
-        "left",
-        "leaver",
-        "attrited",
-        "churned",
-        "fraud",
-        "default",
-        "converted",
-        "purchase",
-        "purchased"
-    }
-
-    return values.isin(
-        positive
-    )
-
-
-def _answer_user_request(
-    df,
-    request,
-    target_dimension=None
-):
-
-    """Answer common natural-language questions directly from the uploaded dataframe.
-    No fixed HR numbers are used; every displayed value is calculated from df at runtime.
-    """
-
-    q = str(
-        request or ""
-    ).strip().lower()
-
-    if not q:
-        return None
-
-    target_col = _find_column_ci(
-        df,
-        [
-            target_dimension or "",
-            "Attrition",
-            "Churn",
-            "Default",
-            "Fraud",
-            "Converted",
-            "Response",
-            "Purchased",
-            "Returned",
-            "Defect",
-            "Late",
-            "Stockout",
-            "Outcome",
-            "Target",
-            "Status"
-        ]
-    )
-
-    dimension = None
-
-    for col in df.columns:
-
-        name = str(col).lower()
-
-        if any(
-            word in name
-            for word in [
-                "department",
-                "gender",
-                "jobrole",
-                "job role",
-                "category",
-                "region",
-                "city",
-                "state",
-                "segment",
-                "business travel",
-                "overtime",
-                "marital",
-                "education"
-            ]
-        ):
-
-            if any(
-                term in q
-                for term in [
-                    str(col).lower(),
-                    name.replace("_", " ")
-                ]
-            ):
-
-                dimension = col
-                break
-
-    if (
-        dimension is None
-        and target_dimension
-    ):
-
-        dimension = _find_column_ci(
-            df,
-            [target_dimension]
-        )
-
-    asks_highest = any(
-        x in q
-        for x in [
-            "highest",
-            "maximum",
-            "max",
-            "most"
-        ]
-    )
-
-    asks_lowest = any(
-        x in q
-        for x in [
-            "lowest",
-            "minimum",
-            "min",
-            "least"
-        ]
-    )
-
-    target_rate_words = any(
-        x in q
-        for x in [
-            "attrition",
-            "churn",
-            "default",
-            "fraud",
-            "conversion",
-            "converted",
-            "response",
-            "purchase",
-            "purchased",
-            "return",
-            "defect",
-            "late",
-            "stockout"
-        ]
-    )
-
-    if (
-        target_col is not None
-        and dimension is not None
-        and (
-            asks_highest
-            or asks_lowest
-            or target_rate_words
-        )
-    ):
-
-        temp = df[
-            [
-                dimension,
-                target_col
-            ]
-        ].copy()
-
-        temp = temp.dropna(
-            subset=[dimension]
-        )
-
-        if not temp.empty:
-
-            temp["__positive"] = (
-                _binary_positive_mask(
-                    temp[target_col]
-                )
-            )
-
-            grouped = (
-                temp.groupby(
-                    dimension,
-                    dropna=False
-                )
-                .agg(
-                    Records=(
-                        "__positive",
-                        "size"
-                    ),
-                    Positive=(
-                        "__positive",
-                        "sum"
-                    )
-                )
-            )
-
-            grouped["Rate"] = (
-                grouped["Positive"]
-                / grouped["Records"]
-                * 100
-            )
-
-            min_records = (
-                1
-                if len(grouped) <= 10
-                else 5
-            )
-
-            eligible = grouped[
-                grouped["Records"]
-                >= min_records
-            ].copy()
-
-            if not eligible.empty:
-
-                if (
-                    asks_highest
-                    or not asks_lowest
-                ):
-
-                    row = (
-                        eligible
-                        .sort_values(
-                            "Rate",
-                            ascending=False
-                        )
-                        .iloc[0]
-                    )
-
-                else:
-
-                    row = (
-                        eligible
-                        .sort_values(
-                            "Rate",
-                            ascending=True
-                        )
-                        .iloc[0]
-                    )
-
-                label = row.name
-
-                return {
-                    "mode":
-                        "analysis",
-
-                    "title":
-                        (
-                            f"Highest observed "
-                            f"{target_col} rate by "
-                            f"{dimension}"
-                        ),
-
-                    "answer":
-                        (
-                            f"{label} has the highest "
-                            f"observed "
-                            f"{target_col.lower()} "
-                            f"rate: "
-                            f"{row['Rate']:.1f}%."
-                        ),
-
-                    "evidence":
-                        (
-                            f"{int(row['Positive']):,} "
-                            f"of "
-                            f"{int(row['Records']):,} "
-                            f"records in {label} "
-                            f"are marked as the positive "
-                            f"{target_col.lower()} outcome."
-                        ),
-
-                    "table":
-                        (
-                            eligible
-                            .sort_values(
-                                "Rate",
-                                ascending=False
-                            )
-                            .reset_index()
-                            .rename(
-                                columns={
-                                    dimension: dimension,
-                                    "Rate":
-                                        f"{target_col} Rate (%)"
-                                }
-                            )[
-                                [
-                                    dimension,
-                                    "Records",
-                                    "Positive",
-                                    f"{target_col} Rate (%)"
-                                ]
-                            ]
-                        ),
-
-                    "note":
-                        (
-                            "This is an observed "
-                            "group-level rate in the "
-                            "uploaded data. It does not "
-                            "establish that the group "
-                            "causes the outcome."
-                        )
-                }
-
-    if dimension is not None:
-
-        metric = None
-
-        for col in df.select_dtypes(
-            include="number"
-        ).columns:
-
-            if (
-                str(col).lower() in q
-                or
-                str(col)
-                .lower()
-                .replace("_", " ")
-                in q
-            ):
-
-                metric = col
-                break
-
-        if metric is None:
-
-            metric = _find_column_ci(
-                df,
-                [
-                    "Sales",
-                    "Revenue",
-                    "Profit",
-                    "Amount",
-                    "Income",
-                    "Salary",
-                    "Price",
-                    "Quantity",
-                    "Demand",
-                    "Cost",
-                    "Spend"
-                ]
-            )
-
-        if (
-            metric is not None
-            and any(
-                x in q
-                for x in [
-                    "average",
-                    "mean",
-                    "avg",
-                    "total",
-                    "sum"
-                ]
-            )
-        ):
-
-            agg = (
-                df.groupby(
-                    dimension,
-                    dropna=False
-                )[metric]
-                .agg(
-                    [
-                        "count",
-                        "mean",
-                        "sum"
-                    ]
-                )
-                .reset_index()
-            )
-
-            agg = agg.sort_values(
-                "mean",
-                ascending=False
-            )
-
-            return {
-                "mode":
-                    "analysis",
-
-                "title":
-                    f"{metric} by {dimension}",
-
-                "answer":
-                    (
-                        f"The highest average "
-                        f"{metric} is for "
-                        f"{agg.iloc[0][dimension]}: "
-                        f"{agg.iloc[0]['mean']:,.2f}."
-                    ),
-
-                "evidence":
-                    (
-                        f"The calculation uses "
-                        f"{int(agg.iloc[0]['count']):,} "
-                        f"non-missing {metric} records "
-                        f"in that group."
-                    ),
-
-                "table":
-                    agg.rename(
-                        columns={
-                            "mean":
-                                f"Average {metric}",
-                            "sum":
-                                f"Total {metric}",
-                            "count":
-                                "Records"
-                        }
-                    ),
-
-                "note":
-                    (
-                        "Values are calculated directly "
-                        "from the uploaded dataset."
-                    )
-            }
-
-    return {
-        "mode":
-            "analysis",
-
-        "title":
-            "Data-driven analysis",
-
-        "answer":
-            (
-                "I could not map that request to a "
-                "reliable calculation from the "
-                "available columns."
-            ),
-
-        "evidence":
-            (
-                f"Available columns: "
-                f"{', '.join(map(str, df.columns))}."
-            ),
-
-        "table":
-            None,
-
-        "note":
-            (
-                "Try naming the metric and dimension "
-                "explicitly, for example: "
-                "'Which department has the highest attrition?'"
-            )
-    }
-
-
-def _render_real_user_analysis(st, df):
-
-    st.markdown(
-        "## 🎯 User Analysis / Prediction Request"
-    )
-
-    st.write(
-        "Ask a question about the uploaded dataset. "
-        "The answer below is calculated from the current data."
-    )
-
-    request = st.text_input(
-        "What would you like to analyse or predict?",
-        key="real_user_request",
-        placeholder=(
-            "e.g. Which department has highest attrition?"
-        )
-    )
-
-    target_options = (
-        ["Auto-detect"]
-        + [str(c) for c in df.columns]
-    )
-
-    selected_target = st.selectbox(
-        "🎯 Target / Dimension (Optional)",
-        target_options,
-        key="real_user_target"
-    )
-
-    target = (
-        None
-        if selected_target == "Auto-detect"
-        else selected_target
-    )
-
-    if st.button(
-        "🔎 Analyse My Request",
-        type="primary",
-        use_container_width=True
-    ):
-
-        result = _answer_user_request(
-            df,
-            request,
-            target
-        )
-
-        st.session_state[
-            "real_user_result"
-        ] = result
-
-    result = st.session_state.get(
-        "real_user_result"
-    )
-
-    if result:
-
-        st.markdown("---")
-
-        st.markdown(
-            "## 🎯 User-Requested Analysis"
-        )
-
-        st.write(
-            f"**Your request:** {request}"
-        )
-
-        st.write(
-            f"**Detected Mode:** 📊 "
-            f"{result['mode'].title()}"
-        )
-
-        if target:
-
-            st.write(
-                f"**Target / Dimension:** `{target}`"
-            )
-
-        st.markdown(
-            "### ✅ Exact Answer"
-        )
-
-        st.success(
-            result["answer"]
-        )
-
-        st.markdown(
-            "### 📊 Evidence from Your Data"
-        )
-
-        st.info(
-            result["evidence"]
-        )
-
-        if result.get(
-            "table"
-        ) is not None:
-
-            st.dataframe(
-                result["table"],
-                use_container_width=True,
-                hide_index=True
-            )
-
-        st.caption(
-            result["note"]
-        )
-
-    # ------------------------------------------------------
-    # COMMON DATASET PROBLEMS — calculated fresh from df
-    # ------------------------------------------------------
-
-    st.markdown(
-        "## 📊 Common Dataset Problems"
-    )
-
-    st.caption(
-        "These statuses are calculated from the uploaded dataset. "
-        "Nothing is hard-coded."
-    )
-
-    cards = []
-
-    missing_cells = int(
-        df.isna()
-        .sum()
-        .sum()
-    )
-
-    missing_cols = int(
-        (
-            df.isna()
-            .sum()
-            > 0
-        ).sum()
-    )
-
-    if missing_cells == 0:
-
-        cards.append(
-            (
-                "🟢",
-                "No Problem Detected — Missing / Incomplete Data",
-                (
-                    f"0 missing cells across "
-                    f"{len(df.columns)} columns."
-                )
-            )
-        )
-
-    else:
-
-        cards.append(
-            (
-                "🔴",
-                "Problem Detected — Missing / Incomplete Data",
-                (
-                    f"{missing_cells:,} missing cells "
-                    f"across {missing_cols:,} columns."
-                )
-            )
-        )
-
-    duplicates = int(
-        df.duplicated().sum()
-    )
-
-    if duplicates == 0:
-
-        cards.append(
-            (
-                "🟢",
-                "No Problem Detected — Duplicate Records",
-                "0 exact duplicate rows detected."
-            )
-        )
-
-    else:
-
-        cards.append(
-            (
-                "🔴",
-                "Problem Detected — Duplicate Records",
-                (
-                    f"{duplicates:,} exact duplicate "
-                    f"rows detected."
-                )
-            )
-        )
-
-    target_col = _find_column_ci(
-        df,
-        [
-            "Attrition",
-            "Churn",
-            "Default",
-            "Fraud",
-            "Converted",
-            "Response",
-            "Purchased",
-            "Returned",
-            "Defect",
-            "Late",
-            "Stockout",
-            "Outcome",
-            "Target",
-            "Status"
-        ]
-    )
-
-    if target_col:
-
-        positive = _binary_positive_mask(
-            df[target_col]
-        )
-
-        rate = (
-            float(
-                positive.mean()
-                * 100
-            )
-            if len(df)
-            else 0.0
-        )
-
-        label = target_col
-
-        if positive.any():
-
-            cards.append(
-                (
-                    "🔴",
-                    (
-                        f"Problem Detected — "
-                        f"{label}"
-                    ),
-                    (
-                        f"{int(positive.sum()):,} "
-                        f"of {len(df):,} records have "
-                        f"a positive {label.lower()} "
-                        f"outcome ({rate:.1f}%)."
-                    )
-                )
-            )
-
-        else:
-
-            cards.append(
-                (
-                    "🟢",
-                    (
-                        f"No Problem Detected — "
-                        f"{label}"
-                    ),
-                    (
-                        f"No recognized positive "
-                        f"{label.lower()} outcome was "
-                        f"found in the uploaded values."
-                    )
-                )
-            )
-
-        for factor in [
-            "OverTime",
-            "JobSatisfaction",
-            "WorkLifeBalance"
-        ]:
-
-            factor_col = _find_column_ci(
-                df,
-                [factor]
-            )
-
-            if factor_col:
-
-                temp = pd.DataFrame(
-                    {
-                        "factor":
-                            df[factor_col],
-                        "positive":
-                            positive
-                    }
-                ).dropna(
-                    subset=["factor"]
-                )
-
-                if temp["factor"].nunique() > 1:
-
-                    rates = (
-                        temp
-                        .groupby("factor")[
-                            "positive"
-                        ]
-                        .mean()
-                        * 100
-                    )
-
-                    spread = float(
-                        rates.max()
-                        - rates.min()
-                    )
-
-                    high_group = rates.idxmax()
-
-                    if spread >= 5:
-
-                        cards.append(
-                            (
-                                "🔴",
-                                (
-                                    f"Problem Detected — "
-                                    f"{factor_col} / {label}"
-                                ),
-                                (
-                                    f"Observed {label.lower()} "
-                                    f"rates range from "
-                                    f"{rates.min():.1f}% to "
-                                    f"{rates.max():.1f}% across "
-                                    f"{factor_col} groups; "
-                                    f"highest is {high_group} "
-                                    f"at {rates.max():.1f}%."
-                                )
-                            )
-                        )
-
-                    else:
-
-                        cards.append(
-                            (
-                                "🟢",
-                                (
-                                    f"No Strong Difference "
-                                    f"Detected — "
-                                    f"{factor_col} / {label}"
-                                ),
-                                (
-                                    f"Observed group rates "
-                                    f"differ by "
-                                    f"{spread:.1f} "
-                                    f"percentage points."
-                                )
-                            )
-                        )
-
-    for icon, title, evidence in cards:
-
-        st.markdown(
-            f"### {icon} {title}"
-        )
-
-        st.write(
-            evidence
-        )
-
-
 # ==========================================================
 # ASK DATA
 # ==========================================================
@@ -3383,9 +1888,7 @@ def _render_real_user_analysis(st, df):
 with tabs[6]:
 
     st.markdown(
-        '<div class="section-title">'
-        '🤖 AI Data Analyst'
-        '</div>',
+        '<div class="section-title">🤖 AI Data Analyst</div>',
         unsafe_allow_html=True
     )
 
@@ -3395,73 +1898,10 @@ with tabs[6]:
         "are kept separate in the Recommendations tab."
     )
 
-    if (
-        df is not None
-        and not df.empty
-    ):
-
-        _render_real_user_analysis(
-            st,
-            df
-        )
-
-    else:
-
-        st.info(
-            "Upload a dataset first to use the AI Data Analyst."
-        )
-
-
-# ==========================================================
-# STANDALONE DASHBOARD SERVER
-# ==========================================================
-
-def _dashboard_port_is_open(host="127.0.0.1", port=8502):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.25)
-    try:
-        return sock.connect_ex((host, port)) == 0
-    finally:
-        sock.close()
-
-
-def _save_dashboard_snapshot(df, sheets):
-    reports_dir = Path("reports")
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_path = reports_dir / "dashboard_snapshot.pkl"
-
-    with open(snapshot_path, "wb") as snapshot_file:
-        pickle.dump({"df": df, "sheets": sheets}, snapshot_file, protocol=pickle.HIGHEST_PROTOCOL)
-
-    return snapshot_path
-
-
-def _start_standalone_dashboard():
-    dashboard_file = Path(__file__).resolve().parent / "dashboard_app.py"
-
-    if not dashboard_file.exists():
-        raise FileNotFoundError(f"Dashboard app not found: {dashboard_file}")
-
-    if not _dashboard_port_is_open(port=8502):
-        subprocess.Popen(
-            [
-                sys.executable, "-m", "streamlit", "run", str(dashboard_file),
-                "--server.port", "8502", "--server.headless", "true",
-            ],
-            cwd=str(dashboard_file.parent),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-        )
-
-        # Give the separate server a few seconds to start before
-        # putting its URL into the PDF.
-        for _ in range(20):
-            if _dashboard_port_is_open(port=8502):
-                break
-            time.sleep(0.25)
-
-    return "http://localhost:8502"
+    render_user_demand_section(
+        st=st,
+        df=df
+    )
 
 
 # ==========================================================
@@ -3471,16 +1911,12 @@ def _start_standalone_dashboard():
 with tabs[7]:
 
     st.markdown(
-        '<div class="section-title">'
-        '📄 Final Business Report'
-        '</div>',
+        '<div class="section-title">📄 Final Business Report</div>',
         unsafe_allow_html=True
     )
 
     total_charts = sum(
-        len(
-            sheet["charts"]
-        )
+        len(sheet["charts"])
         for sheet in st.session_state.sheets
     )
 
@@ -3523,6 +1959,10 @@ with tabs[7]:
             "reports"
         )
 
+        # Important:
+        # Avoid the previous WinError 183
+        # when reports already exists.
+
         if reports_dir.exists():
 
             if not reports_dir.is_dir():
@@ -3543,21 +1983,11 @@ with tabs[7]:
             )
 
         pdf_path = (
-            reports_dir
-            / "automated_bi_report.pdf"
+            reports_dir /
+            "automated_bi_report.pdf"
         )
 
         try:
-
-            # Save the current dashboard and start a separate
-            # dashboard-only Streamlit server on port 8502.
-            # The existing main Streamlit app on port 8501 is unchanged.
-            _save_dashboard_snapshot(
-                df,
-                st.session_state.sheets
-            )
-
-            dashboard_url = _start_standalone_dashboard()
 
             generate_pdf(
 
@@ -3573,17 +2003,7 @@ with tabs[7]:
 
                 st.session_state.recommendations,
 
-                st.session_state.questions,
-
-                st.session_state.get("research_result"),
-
-                st.session_state.get("research_sources", []),
-
-                st.session_state.get("basic_data_explanation"),
-
-                st.session_state.get("real_user_result"),
-
-                dashboard_url
+                st.session_state.questions
             )
 
             with open(
