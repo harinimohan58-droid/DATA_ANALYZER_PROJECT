@@ -1,7 +1,6 @@
 import math
 import os
 import re
-import shutil
 from pathlib import Path
 from html import escape
 
@@ -24,45 +23,6 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
 from modules.chart_engine import create_chart
-
-
-def _configure_kaleido_browser():
-    """Force Kaleido to use Debian's headless Chromium shell on Cloud.
-
-    chromium-headless-shell is specifically designed for headless rendering
-    (including PDF/image generation) and avoids Kaleido downloading its own
-    Chrome binary. The Plotly Figure itself remains unchanged.
-    """
-    candidates = [
-        os.environ.get("BROWSER_PATH", ""),
-        os.environ.get("CHROME_BIN", ""),
-        "/usr/bin/chromium-headless-shell",
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome-stable",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chrome",
-    ]
-
-    for browser in candidates:
-        if browser and os.path.isfile(browser) and os.access(browser, os.X_OK):
-            os.environ["BROWSER_PATH"] = browser
-            return browser
-
-    for name in (
-        "chromium-headless-shell",
-        "chromium",
-        "chromium-browser",
-        "google-chrome-stable",
-        "google-chrome",
-        "chrome",
-    ):
-        found = shutil.which(name)
-        if found:
-            os.environ["BROWSER_PATH"] = found
-            return found
-
-    return None
 
 
 # ============================================================
@@ -342,14 +302,9 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
         # Use the exact Plotly figure rendered by Streamlit. Kaleido is only
         # the image exporter needed to place that same figure in the PDF.
         try:
-            browser_path = _configure_kaleido_browser()
-            if not browser_path:
-                raise RuntimeError(
-                    "No system headless browser was found. Add chromium-headless-shell to packages.txt at the repository root."
-                )
-
-            # Plotly/Kaleido automatically uses BROWSER_PATH. No deprecated
-            # engine argument is passed here.
+            # Export the exact Plotly Figure used by the Streamlit dashboard.
+            # This project pins legacy Kaleido 0.2.1, which contains its own
+            # rendering engine and therefore does not require Chrome on Cloud.
             fig.write_image(
                 str(tile_path),
                 format="png",
@@ -360,8 +315,7 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
         except Exception as exc:
             raise RuntimeError(
                 "The exact Streamlit Plotly chart could not be exported to PNG. "
-                "The PDF uses the same Plotly Figure as the Streamlit dashboard. "
-                "On Streamlit Cloud, install chromium-headless-shell from packages.txt. "
+                "Use plotly==5.24.1 and kaleido==0.2.1 in requirements.txt. "
                 f"Underlying error: {exc}"
             ) from exc
 
