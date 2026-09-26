@@ -1,6 +1,8 @@
 import math
 import os
 import re
+import hashlib
+import json
 from pathlib import Path
 from html import escape
 
@@ -244,8 +246,37 @@ def _footer(canvas, doc):
 # DASHBOARD COMPOSITE IMAGE
 # ============================================================
 
+def _dataset_signature(df):
+    """Stable signature for reusing already-rendered exact dashboard charts."""
+    h = hashlib.sha256()
+    h.update(str(df.shape).encode("utf-8"))
+    h.update(json.dumps([str(c) for c in df.columns]).encode("utf-8"))
+    h.update(json.dumps([str(t) for t in df.dtypes]).encode("utf-8"))
+    try:
+        values = pd.util.hash_pandas_object(df, index=True).values.tobytes()
+        h.update(values)
+    except Exception:
+        h.update(df.to_csv(index=True).encode("utf-8", errors="ignore"))
+    return h.hexdigest()[:20]
+
+
+def _chart_signature(chart):
+    """Only include fields that affect the exact dashboard figure."""
+    payload = {
+        "category": chart.get("category"),
+        "metric": chart.get("metric"),
+        "chart_type": chart.get("chart_type", "Bar"),
+        "color": chart.get("color", "#22D3EE"),
+        "title": chart.get("title", "Business Chart"),
+        "position": chart.get("position", 999),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+
+
 def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
-    """Render the exact charts used by the Streamlit dashboard as one PDF panel."""
+    """Render the exact Streamlit charts, reusing PNGs already rendered for this dataset."""
     charts = sorted(
         sheet.get("charts", []),
         key=lambda x: x.get("position", 999),
@@ -253,79 +284,85 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
     if not charts:
         return None
 
-    tile_w, tile_h = 560, 320
-    gap = 22
-    header_h = 95
+    tile_w, tile_h = 540, 305
+    gap = 18
+    header_h = 82
     cols = 2
     rows = math.ceil(len(charts) / cols)
     canvas_w = cols * tile_w + (cols + 1) * gap
     canvas_h = header_h + rows * tile_h + (rows + 1) * gap
 
-    # The PDF panel uses the same midnight-blue visual language as Streamlit.
+    dataset_sig = _dataset_signature(df)
+    panel_sig = hashlib.sha256(
+        json.dumps(
+            [(_chart_signature(c)) for c in charts],
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+
+    cache_dir = Path(output_dir) / "_dashboard_tiles" / dataset_sig
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    out_path = Path(output_dir) / f"dashboard_panel_{sheet_index}_{dataset_sig}_{panel_sig}.png"
+
+    if out_path.exists():
+        return out_path
+
     canvas = PILImage.new("RGB", (canvas_w, canvas_h), "#071228")
     draw = ImageDraw.Draw(canvas)
 
     try:
-        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
-        small_font = ImageFont.truetype("DejaVuSans.ttf", 17)
+        font = ImageFont.truetype("DejaVuSans-Bold.ttf", 26)
+        small_font = ImageFont.truetype("DejaVuSans.ttf", 15)
     except Exception:
         font = ImageFont.load_default()
         small_font = ImageFont.load_default()
 
     sheet_name = safe(sheet.get("name", f"Dashboard Sheet {sheet_index}"))
-    draw.text((gap, 18), sheet_name, fill="#F6FAFF", font=font)
+    draw.text((gap, 15), sheet_name, fill="#F6FAFF", font=font)
     draw.text(
-        (gap, 55),
+        (gap, 48),
         f"Same Streamlit dashboard charts • {len(charts)} analytical views",
         fill="#8FB7DD",
         font=small_font,
     )
 
-    image_dir = Path(output_dir) / "_dashboard_tiles"
-    image_dir.mkdir(parents=True, exist_ok=True)
-
     for idx, chart in enumerate(charts):
-        # IMPORTANT: no replacement/random charts. The exact chart definition
-        # from st.session_state.sheets is sent through the same chart engine.
-        fig = create_chart(
-            df,
-            category=chart.get("category"),
-            metric=chart.get("metric"),
-            chart_type=chart.get("chart_type", "Bar"),
-            color=chart.get("color", "#22D3EE"),
-            title=chart.get("title", "Business Chart"),
-        )
-        fig = _style_neon_figure(fig, chart)
-        fig.update_layout(width=tile_w, height=tile_h)
+        signature = _chart_signature(chart)
+        tile_path = cache_dir / f"chart_{signature}.png"
 
-        tile_path = image_dir / f"sheet_{sheet_index}_tile_{idx}.png"
-        # Use the exact Plotly figure rendered by Streamlit. Kaleido is only
-        # the image exporter needed to place that same figure in the PDF.
-        try:
-            # Export the exact Plotly Figure used by the Streamlit dashboard.
-            # This project pins legacy Kaleido 0.2.1, which contains its own
-            # rendering engine and therefore does not require Chrome on Cloud.
-            fig.write_image(
-                str(tile_path),
-                format="png",
-                width=tile_w,
-                height=tile_h,
-                scale=1,
+        if not tile_path.exists():
+            # IMPORTANT: this is the exact dashboard chart definition.
+            fig = create_chart(
+                df,
+                category=chart.get("category"),
+                metric=chart.get("metric"),
+                chart_type=chart.get("chart_type", "Bar"),
+                color=chart.get("color", "#22D3EE"),
+                title=chart.get("title", "Business Chart"),
             )
-        except Exception as exc:
-            raise RuntimeError(
-                "The exact Streamlit Plotly chart could not be exported to PNG. "
-                "Use plotly==5.24.1 and kaleido==0.2.1 in requirements.txt. "
-                f"Underlying error: {exc}"
-            ) from exc
+            fig = _style_neon_figure(fig, chart)
+            fig.update_layout(width=tile_w, height=tile_h)
+            try:
+                fig.write_image(
+                    str(tile_path),
+                    format="png",
+                    width=tile_w,
+                    height=tile_h,
+                    scale=1,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "The exact Streamlit Plotly chart could not be exported to PNG. "
+                    "Use plotly==5.24.1 and kaleido==0.2.1 in requirements.txt. "
+                    f"Underlying error: {exc}"
+                ) from exc
 
         tile = PILImage.open(tile_path).convert("RGB")
         x = gap + (idx % cols) * (tile_w + gap)
         y = header_h + gap + (idx // cols) * (tile_h + gap)
         canvas.paste(tile, (x, y))
 
-    out_path = Path(output_dir) / f"dashboard_panel_{sheet_index}.png"
-    canvas.save(out_path, quality=94)
+    canvas.save(out_path, quality=90)
     return out_path
 
 
