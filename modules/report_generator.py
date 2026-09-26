@@ -291,14 +291,21 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
         tile_path = image_dir / f"sheet_{sheet_index}_tile_{idx}.png"
         # Use the exact Plotly figure rendered by Streamlit. Kaleido is only
         # the image exporter needed to place that same figure in the PDF.
-        fig.write_image(
-            str(tile_path),
-            format="png",
-            width=tile_w,
-            height=tile_h,
-            scale=1,
-            engine="kaleido",
-        )
+        try:
+            fig.write_image(
+                str(tile_path),
+                format="png",
+                width=tile_w,
+                height=tile_h,
+                scale=1,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "The exact Streamlit Plotly chart could not be exported to PNG. "
+                "Install/upgrade Plotly and Kaleido in the deployment environment. "
+                f"Underlying error: {exc}"
+            ) from exc
+
         tile = PILImage.open(tile_path).convert("RGB")
         x = gap + (idx % cols) * (tile_w + gap)
         y = header_h + gap + (idx // cols) * (tile_h + gap)
