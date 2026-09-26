@@ -26,18 +26,36 @@ from modules.chart_engine import create_chart
 
 
 def _configure_kaleido_browser():
-    """Point Kaleido at Streamlit Community Cloud's Chromium binary when available."""
+    """Find a system browser for Kaleido without changing the Plotly figure."""
     if os.environ.get("BROWSER_PATH"):
-        return
-    if os.name != "posix":
-        return
-    for browser in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/bin/chrome"):
+        return os.environ["BROWSER_PATH"]
+
+    candidates = [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chrome",
+    ]
+
+    for browser in candidates:
         if os.path.exists(browser):
             os.environ["BROWSER_PATH"] = browser
-            return
+            return browser
 
+    # Kaleido v1 no longer bundles Chrome. When Streamlit Cloud has not
+    # installed Chromium yet, use Kaleido's supported Python downloader.
+    # This is done only when an export is requested, not at app startup.
+    try:
+        import kaleido
+        downloaded = kaleido.get_chrome_sync()
+        if downloaded and os.path.exists(str(downloaded)):
+            os.environ["BROWSER_PATH"] = str(downloaded)
+            return str(downloaded)
+    except Exception:
+        pass
 
-_configure_kaleido_browser()
+    return None
 
 
 # ============================================================
@@ -307,6 +325,12 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
         # Use the exact Plotly figure rendered by Streamlit. Kaleido is only
         # the image exporter needed to place that same figure in the PDF.
         try:
+            browser_path = _configure_kaleido_browser()
+            if not browser_path:
+                raise RuntimeError(
+                    "Kaleido could not find Chrome/Chromium and its automatic downloader was unsuccessful."
+                )
+
             fig.write_image(
                 str(tile_path),
                 format="png",
