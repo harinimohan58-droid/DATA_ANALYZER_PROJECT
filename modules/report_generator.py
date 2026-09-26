@@ -7,10 +7,6 @@ from html import escape
 import pandas as pd
 from PIL import Image as PILImage, ImageDraw, ImageFont
 
-# Matplotlib is used as a static fallback when Plotly/Kaleido cannot export PNGs.
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -180,24 +176,69 @@ def _footer(canvas, doc):
 # STATIC CHART FALLBACK FOR PDF
 # ============================================================
 
-def _render_chart_matplotlib(df, chart, output_path, width=560, height=320):
-    """Render a chart as a PNG without requiring Plotly/Kaleido/Chrome.
+def _hex_rgb(value, fallback=(37, 99, 235)):
+    """Convert a hex colour to an RGB tuple for the PIL fallback."""
+    try:
+        text = str(value or "").strip().lstrip("#")
+        if len(text) == 3:
+            text = "".join(ch * 2 for ch in text)
+        if len(text) == 6:
+            return tuple(int(text[i:i+2], 16) for i in (0, 2, 4))
+    except Exception:
+        pass
+    return fallback
 
-    The interactive dashboard remains Plotly-based. This helper is only for
-    the static PDF so charts cannot disappear when Kaleido is unavailable.
+
+def _safe_font(bold=False, size=16):
+    candidates = []
+    if bold:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        ]
+    else:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+        ]
+    for font_path in candidates:
+        try:
+            return ImageFont.truetype(font_path, size=size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _draw_wrapped_title(draw, title, x, y, width, font):
+    """Draw a compact title, clipped to the available width."""
+    text = safe(title)
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        if bbox[2] - bbox[0] > width:
+            while len(text) > 4:
+                text = text[:-4] + "..."
+                bbox = draw.textbbox((0, 0), text, font=font)
+                if bbox[2] - bbox[0] <= width:
+                    break
+    except Exception:
+        text = text[:55]
+    draw.text((x, y), text, fill=(22, 58, 99), font=font)
+
+
+def _render_chart_pil(df, chart, output_path, width=560, height=320):
+    """Render a static chart using Pillow only.
+
+    This is used only when Plotly/Kaleido cannot export a PNG. It avoids
+    optional plotting packages so the Streamlit Cloud app can still build a
+    visual PDF.
     """
     category = chart.get("category")
     metric = chart.get("metric")
     chart_type = str(chart.get("chart_type", "Bar")).strip().lower()
     title = safe(chart.get("title", "Business Chart"))
-    color = chart.get("color", "#2563EB") or "#2563EB"
-
+    color = _hex_rgb(chart.get("color", "#2563EB"))
     work = df.copy()
-    fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
-    fig.patch.set_facecolor("white")
-    ax.set_facecolor("white")
 
-    # Resolve columns safely.
     if category not in work.columns:
         category = None
     if metric not in work.columns:
@@ -205,11 +246,43 @@ def _render_chart_matplotlib(df, chart, output_path, width=560, height=320):
 
     numeric_cols = work.select_dtypes(include="number").columns.tolist()
     cat_cols = work.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
-
     if metric is None and numeric_cols:
         metric = numeric_cols[0]
     if category is None and cat_cols:
         category = cat_cols[0]
+
+    img = PILImage.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(img)
+    title_font = _safe_font(bold=True, size=20)
+    label_font = _safe_font(bold=False, size=12)
+    small_font = _safe_font(bold=False, size=10)
+
+    _draw_wrapped_title(draw, title, 18, 14, width - 36, title_font)
+
+    left, top, right, bottom = 55, 55, width - 22, height - 42
+    plot_w = max(1, right - left)
+    plot_h = max(1, bottom - top)
+
+    # Determine grouped values for categorical charts.
+    grouped = None
+    if category and metric:
+        temp = work[[category, metric]].copy()
+        temp[metric] = pd.to_numeric(temp[metric], errors="coerce")
+        temp = temp.dropna(subset=[category, metric])
+        if not temp.empty:
+            grouped = temp.groupby(category, dropna=False)[metric].sum().sort_values(ascending=False).head(10)
+
+    def draw_axes(y_max):
+        y_max = float(y_max) if y_max and y_max > 0 else 1.0
+        draw.line((left, bottom, right, bottom), fill=(148, 163, 184), width=1)
+        draw.line((left, top, left, bottom), fill=(148, 163, 184), width=1)
+        for tick in range(5):
+            frac = tick / 4
+            y = bottom - int(plot_h * frac)
+            draw.line((left, y, right, y), fill=(226, 232, 240), width=1)
+            val = y_max * frac
+            draw.text((3, y - 7), fmt_num(val), fill=(100, 116, 139), font=small_font)
+        return y_max
 
     if chart_type in {"scatter", "box"} and len(numeric_cols) >= 2:
         x_col = metric or numeric_cols[0]
@@ -218,64 +291,153 @@ def _render_chart_matplotlib(df, chart, output_path, width=560, height=320):
         y = pd.to_numeric(work[y_col], errors="coerce")
         valid = x.notna() & y.notna()
         x, y = x[valid], y[valid]
-        if chart_type == "box":
-            ax.boxplot(y.tolist(), patch_artist=False)
-            ax.set_xticks([1])
-            ax.set_xticklabels([pretty_column(y_col)])
-            ax.set_ylabel(pretty_column(y_col))
+        if not x.empty and not y.empty:
+            if chart_type == "box":
+                vals = y.astype(float).tolist()
+                vals.sort()
+                q1 = vals[max(0, int(0.25 * (len(vals)-1)))]
+                med = vals[max(0, int(0.50 * (len(vals)-1)))]
+                q3 = vals[max(0, int(0.75 * (len(vals)-1)))]
+                vmin, vmax = min(vals), max(vals)
+                draw_axes(vmax if vmax > 0 else 1)
+                def sy(v):
+                    return bottom - int((v / (vmax if vmax > 0 else 1)) * plot_h)
+                cx = (left + right) // 2
+                box_w = 80
+                draw.line((cx, sy(vmin), cx, sy(vmax)), fill=color, width=3)
+                draw.rectangle((cx-box_w//2, sy(q3), cx+box_w//2, sy(q1)), outline=color, width=3)
+                draw.line((cx-box_w//2, sy(med), cx+box_w//2, sy(med)), fill=color, width=3)
+                draw.text((cx-25, bottom+8), pretty_column(y_col), fill=(51,65,85), font=label_font)
+            else:
+                x_min, x_max = float(x.min()), float(x.max())
+                y_min, y_max = float(y.min()), float(y.max())
+                x_span = (x_max-x_min) or 1.0
+                y_span = (y_max-y_min) or 1.0
+                draw_axes(y_max if y_max > 0 else 1)
+                # Redraw with a baseline-independent y mapping for scatter.
+                for xv, yv in zip(x.tolist()[:600], y.tolist()[:600]):
+                    px = left + int(((float(xv)-x_min)/x_span) * plot_w)
+                    py = bottom - int(((float(yv)-y_min)/y_span) * plot_h)
+                    r = 3
+                    draw.ellipse((px-r, py-r, px+r, py+r), fill=color)
+                draw.text((left, bottom+10), pretty_column(x_col), fill=(51,65,85), font=label_font)
+                draw.text((max(2, left-50), top+2), pretty_column(y_col), fill=(51,65,85), font=label_font)
         else:
-            ax.scatter(x, y, s=18, alpha=0.65)
-            ax.set_xlabel(pretty_column(x_col))
-            ax.set_ylabel(pretty_column(y_col))
+            draw.text((width//2-90, height//2), "No usable numeric data", fill=(100,116,139), font=label_font)
+
     elif chart_type in {"histogram", "hist"} and metric:
         values = pd.to_numeric(work[metric], errors="coerce").dropna()
-        ax.hist(values, bins=12, edgecolor="white")
-        ax.set_xlabel(pretty_column(metric))
-        ax.set_ylabel("Count")
-    elif category and metric:
-        temp = work[[category, metric]].copy()
-        temp[metric] = pd.to_numeric(temp[metric], errors="coerce")
-        temp = temp.dropna(subset=[category, metric])
-        grouped = temp.groupby(category, dropna=False)[metric].sum().sort_values(ascending=False).head(10)
-        labels = [safe(x) for x in grouped.index]
-        values = grouped.values
-        if chart_type == "pie":
-            ax.pie(values, labels=labels, autopct="%1.0f%%", startangle=90)
-            ax.axis("equal")
-        elif chart_type in {"line", "area"}:
-            ax.plot(range(len(values)), values, marker="o", linewidth=2)
-            if chart_type == "area":
-                ax.fill_between(range(len(values)), values, alpha=0.18)
-            ax.set_xticks(range(len(labels)))
-            ax.set_xticklabels(labels, rotation=35, ha="right")
-            ax.set_ylabel(pretty_column(metric))
+        if not values.empty:
+            counts, edges = pd.cut(values, bins=10, retbins=True, labels=False, duplicates="drop")
+            freq = counts.value_counts().sort_index()
+            bins = int(max(1, len(edges)-1))
+            heights = [int(freq.get(i, 0)) for i in range(bins)]
+            draw_axes(max(heights) if heights else 1)
+            gap = 4
+            bw = max(2, (plot_w - gap*(bins-1)) // bins)
+            max_h = max(heights) if heights else 1
+            for i, h in enumerate(heights):
+                x0 = left + i*(bw+gap)
+                h_px = int((h/max_h)*plot_h) if max_h else 0
+                draw.rectangle((x0, bottom-h_px, x0+bw, bottom), fill=color)
+            draw.text((left, bottom+10), pretty_column(metric), fill=(51,65,85), font=label_font)
         else:
-            ax.bar(range(len(values)), values)
-            ax.set_xticks(range(len(labels)))
-            ax.set_xticklabels(labels, rotation=35, ha="right")
-            ax.set_ylabel(pretty_column(metric))
+            draw.text((width//2-90, height//2), "No usable data", fill=(100,116,139), font=label_font)
+
+    elif grouped is not None and not grouped.empty:
+        labels = [safe(x) for x in grouped.index]
+        values = [float(v) for v in grouped.values]
+        max_val = max(values) if values else 1.0
+        if chart_type == "pie":
+            total = sum(values) or 1.0
+            cx, cy = (left+right)//2, (top+bottom)//2 + 5
+            radius = min(plot_h, plot_w)//3
+            start = -90.0
+            pie_colors = [color, (124,58,237), (219,39,119), (22,163,74), (234,88,12), (8,145,178), (202,138,4), (220,38,38), (79,70,229), (15,118,110)]
+            for i, v in enumerate(values):
+                end = start + 360.0 * (v/total)
+                draw.pieslice((cx-radius, cy-radius, cx+radius, cy+radius), start=start, end=end, fill=pie_colors[i % len(pie_colors)])
+                start = end
+            legend_x = right - 125
+            legend_y = top + 5
+            for i, label in enumerate(labels):
+                yy = legend_y + i*22
+                draw.rectangle((legend_x, yy, legend_x+12, yy+12), fill=pie_colors[i % len(pie_colors)])
+                short = label if len(label) <= 18 else label[:15] + "..."
+                draw.text((legend_x+18, yy-2), short, fill=(51,65,85), font=small_font)
+        else:
+            draw_axes(max_val)
+            n = len(values)
+            if chart_type in {"line", "area"}:
+                points = []
+                for i, v in enumerate(values):
+                    px = left + int((i/max(1,n-1))*plot_w)
+                    py = bottom - int((v/max_val)*plot_h)
+                    points.append((px,py))
+                if chart_type == "area" and len(points) > 1:
+                    draw.polygon(points + [(points[-1][0], bottom), (points[0][0], bottom)], fill=tuple(min(255, x+80) for x in color))
+                if len(points) > 1:
+                    draw.line(points, fill=color, width=4)
+                for px, py in points:
+                    draw.ellipse((px-4,py-4,px+4,py+4), fill=color)
+            else:
+                n = len(values)
+                gap = 8
+                bw = max(6, (plot_w - gap*(n+1))//max(n,1))
+                for i,v in enumerate(values):
+                    x0 = left + gap + i*(bw+gap)
+                    h = int((v/max_val)*plot_h)
+                    draw.rounded_rectangle((x0, bottom-h, x0+bw, bottom), radius=4, fill=color)
+            for i, label in enumerate(labels):
+                px = left + int((i/max(1,n-1))*plot_w) if chart_type in {"line","area"} else left + gap + i*(bw+gap) + bw//2
+                short = label if len(label) <= 12 else label[:10] + "..."
+                draw.text((px-18, bottom+8), short, fill=(51,65,85), font=small_font)
+            draw.text((left, top-20), pretty_column(metric), fill=(51,65,85), font=label_font)
+
     elif metric:
+        # Metric-only fallback: compact histogram.
         values = pd.to_numeric(work[metric], errors="coerce").dropna()
-        ax.hist(values, bins=12, edgecolor="white")
-        ax.set_xlabel(pretty_column(metric))
-        ax.set_ylabel("Count")
+        if not values.empty:
+            # Quantile buckets are robust for skewed business data.
+            try:
+                bucket = pd.qcut(values, q=min(10, values.nunique()), duplicates="drop")
+                counts = bucket.value_counts().sort_index()
+                heights = counts.tolist()
+            except Exception:
+                heights = [len(values)]
+            draw_axes(max(heights) if heights else 1)
+            n = len(heights)
+            gap = 7
+            bw = max(6, (plot_w - gap*(n+1))//max(n,1))
+            max_h = max(heights) if heights else 1
+            for i,h in enumerate(heights):
+                x0 = left + gap + i*(bw+gap)
+                hp = int((h/max_h)*plot_h)
+                draw.rectangle((x0, bottom-hp, x0+bw, bottom), fill=color)
+            draw.text((left, top-20), pretty_column(metric), fill=(51,65,85), font=label_font)
     elif category:
         counts = work[category].astype(str).value_counts().head(10)
-        ax.bar(range(len(counts)), counts.values)
-        ax.set_xticks(range(len(counts)))
-        ax.set_xticklabels([safe(x) for x in counts.index], rotation=35, ha="right")
-        ax.set_ylabel("Count")
+        if not counts.empty:
+            values = counts.values.tolist()
+            draw_axes(max(values) if values else 1)
+            n = len(values)
+            gap = 8
+            bw = max(6, (plot_w - gap*(n+1))//max(n,1))
+            max_h = max(values) if values else 1
+            for i,h in enumerate(values):
+                x0 = left + gap + i*(bw+gap)
+                hp = int((h/max_h)*plot_h)
+                draw.rectangle((x0, bottom-hp, x0+bw, bottom), fill=color)
+                label = safe(counts.index[i])
+                label = label if len(label)<=12 else label[:10]+"..."
+                draw.text((x0, bottom+8), label, fill=(51,65,85), font=small_font)
+            draw.text((left, top-20), "Record Count", fill=(51,65,85), font=label_font)
     else:
-        ax.text(0.5, 0.5, "No suitable fields for this chart", ha="center", va="center")
-        ax.set_axis_off()
+        draw.rounded_rectangle((left, top, right, bottom), radius=12, outline=(203,213,225), width=2)
+        msg = "No suitable fields for this chart"
+        draw.text((width//2-95, height//2), msg, fill=(100,116,139), font=label_font)
 
-    ax.set_title(title, loc="left", fontsize=11, fontweight="bold", pad=10)
-    ax.grid(axis="y", alpha=0.18)
-    for spine in ("top", "right"):
-        ax.spines[spine].set_visible(False)
-    fig.tight_layout(pad=1.2)
-    fig.savefig(output_path, format="png", bbox_inches="tight", facecolor="white")
-    plt.close(fig)
+    img.save(output_path, format="PNG", optimize=True)
 
 
 def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
@@ -340,12 +502,11 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
             y = header_h + gap + (idx // cols) * (tile_h + gap)
             canvas.paste(tile, (x, y))
         except Exception:
-            # Plotly/Kaleido can fail on machines where Kaleido or its browser
-            # runtime is unavailable. Fall back to Matplotlib so the PDF still
-            # contains the actual chart instead of an empty placeholder.
+            # Plotly/Kaleido may not be available on Streamlit Cloud. Use a
+            # Pillow-only renderer so the PDF still contains actual charts.
             try:
                 fallback_path = image_dir / f"sheet_{sheet_index}_tile_{idx}_fallback.png"
-                _render_chart_matplotlib(df, chart, fallback_path, tile_w, tile_h)
+                _render_chart_pil(df, chart, fallback_path, tile_w, tile_h)
                 tile = PILImage.open(fallback_path).convert("RGB")
                 x = gap + (idx % cols) * (tile_w + gap)
                 y = header_h + gap + (idx // cols) * (tile_h + gap)
