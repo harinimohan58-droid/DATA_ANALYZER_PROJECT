@@ -1,7 +1,11 @@
 .env
 venv/
+.venv/
 __pycache__/
 *.pyc
+
+.streamlit/secrets.toml
+
 reports/*.pdf
 reports/*.pkl
 reports/_report_chart_images/

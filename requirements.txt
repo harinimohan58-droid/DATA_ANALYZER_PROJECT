@@ -5,9 +5,10 @@ plotly
 openpyxl
 xlrd
 scipy
-statsmodels
+scikit-learn
+joblib
 reportlab
 kaleido
 google-genai
 python-dotenv
-joblib
+statsmodels

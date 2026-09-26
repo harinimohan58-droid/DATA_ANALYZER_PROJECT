@@ -5,6 +5,7 @@ import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
+
 import sys
 import socket
 import subprocess
@@ -68,96 +69,318 @@ from modules.report_generator import (
 )
 
 # ==========================================================
-# DATA-DRIVEN QUESTION GENERATOR
+# PROFESSIONAL DATA-DRIVEN BUSINESS QUESTION GENERATOR
 # ==========================================================
 
+def _pretty_column_name(column):
+    """Turn a dataframe column name into a user-friendly business label."""
+    text = re.sub(r"[_\\-]+", " ", str(column)).strip()
+    text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+    return text.strip().title()
+
+
+def _question_column(columns, keywords, excluded=None):
+    """Find the most relevant real column using keyword matching."""
+    excluded = set(excluded or [])
+    candidates = []
+    for column in columns:
+        if column in excluded:
+            continue
+        name = str(column).lower().replace("_", " ").replace("-", " ")
+        score = sum(1 for keyword in keywords if keyword in name)
+        if score:
+            candidates.append((score, len(name), column))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: (-x[0], x[1]))
+    return candidates[0][2]
+
+
+def _detect_question_domain(df):
+    """Use the same data-driven domain classification as the research engine."""
+    detected = _detect_business_domain(df) if "_detect_business_domain" in globals() else "General Business Analytics"
+    mapping = {
+        "Short-Term Lending / Loan Analytics": "Finance / Loan Analytics",
+        "Banking / Financial Services": "Finance / Loan Analytics",
+        "Insurance Analytics": "Insurance Analytics",
+        "Marketing / Campaign Analytics": "Marketing / Customer Analytics",
+        "Retail / Sales Analytics": "Retail / Sales Analytics",
+        "Manufacturing Analytics": "Manufacturing Analytics",
+        "Healthcare Analytics": "Healthcare Analytics",
+        "Education Analytics": "Education Analytics",
+        "Telecom Analytics": "Telecom / Churn Analytics",
+        "Human Resources / Workforce Analytics": "Human Resources / Workforce Analytics",
+    }
+    return mapping.get(detected, "General Business Analytics")
+
 def generate_data_questions(df):
+    """Generate professional, business-oriented questions from the actual schema.
+
+    The questions intentionally avoid generic dataframe questions such as
+    record count, column count, average age, or list-all-categories. They are
+    built from real columns, business-domain signals, relationships, segments,
+    trends, and decision-oriented analysis opportunities in the uploaded data.
+    """
+    if df is None or df.empty:
+        return [
+            "What business pattern should be investigated first in this dataset?",
+            "Which available customer, product, employee, or transaction segment shows the strongest business signal?",
+            "What relationships between the available measures could support a business decision?",
+        ]
+
+    columns = list(df.columns)
+    numeric = df.select_dtypes(include="number").columns.tolist()
+    categorical = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+    dates = df.select_dtypes(include=["datetime64[ns]", "datetime64[ns, UTC]"]).columns.tolist()
+    domain = _detect_question_domain(df)
 
     questions = []
 
-    columns = df.columns.tolist()
+    # -----------------------------
+    # Identify useful business fields
+    # -----------------------------
+    income = _question_column(columns, ["income", "salary", "revenue", "sales", "amount", "balance"])
+    outcome = _question_column(columns, [
+        "loan", "account", "attrition", "churn", "default", "fraud",
+        "response", "conversion", "purchase", "profit", "sales", "revenue"
+    ])
+    customer = _question_column(columns, ["customer", "client", "member", "account holder"])
+    product = _question_column(columns, ["product", "item", "category", "service"])
+    geography = _question_column(columns, ["region", "city", "state", "country", "location", "branch", "territory"])
+    demographic = _question_column(columns, ["age", "gender", "marital", "qualification", "education"])
+    department = _question_column(columns, ["department", "job role", "jobrole", "team", "division"])
+    time_col = dates[0] if dates else _question_column(columns, ["date", "year", "month", "quarter", "week"])
 
-    numeric_columns = (
-        df.select_dtypes(include="number")
-        .columns
-        .tolist()
-    )
-
-    categorical_columns = (
-        df.select_dtypes(
-            include=["object", "category", "bool"]
-        )
-        .columns
-        .tolist()
-    )
-
-    questions.append(
-        f"What are the main characteristics of this dataset?"
-    )
-
-    questions.append(
-        f"Which columns contain the most useful information "
-        f"for analysis?"
-    )
-
-    for column in categorical_columns[:3]:
-
-        questions.append(
-            f"What are the most common groups in {column}?"
-        )
-
-        if numeric_columns:
-
-            metric = numeric_columns[0]
-
-            questions.append(
-                f"How does {metric} vary across {column}?"
-            )
-
-    for column in numeric_columns[:3]:
-
-        questions.append(
-            f"What is the overall pattern of {column}?"
-        )
-
-    if len(numeric_columns) >= 2:
-
-        x = numeric_columns[0]
-        y = numeric_columns[1]
-
-        questions.append(
-            f"Is there a relationship between {x} and {y}?"
-        )
-
-    missing_columns = [
-        column
-        for column in columns
-        if df[column].isna().sum() > 0
+    # High-cardinality identifiers are generally not useful as business dimensions.
+    categorical_business = [
+        c for c in categorical
+        if df[c].nunique(dropna=True) <= max(2, min(100, len(df) * 0.25))
     ]
 
-    if missing_columns:
+    # -----------------------------
+    # Domain-specific questions
+    # -----------------------------
+    if domain == "Finance / Loan Analytics":
+        if outcome and income:
+            questions.append(
+                f"How does {_pretty_column_name(outcome)} participation vary across {_pretty_column_name(income)} levels?"
+            )
+        if outcome and demographic:
+            questions.append(
+                f"Which {_pretty_column_name(demographic)} segments show the highest concentration of {_pretty_column_name(outcome)}?"
+            )
+        if income and demographic:
+            questions.append(
+                f"How does {_pretty_column_name(income)} differ across {_pretty_column_name(demographic)} groups?"
+            )
+        if outcome:
+            questions.append(
+                f"Which customer characteristics distinguish records with and without {_pretty_column_name(outcome)}?"
+            )
+        if geography and outcome:
+            questions.append(
+                f"Which {_pretty_column_name(geography)} segments have the highest concentration of {_pretty_column_name(outcome)}?"
+            )
+        if income and categorical_business:
+            c = categorical_business[0]
+            if c not in {outcome, demographic, geography}:
+                questions.append(
+                    f"Which {_pretty_column_name(c)} groups have the highest average {_pretty_column_name(income)}?"
+                )
+        questions.extend([
+            "Which customer segments appear most relevant for further financial-product analysis?",
+            "Are there customer groups with relatively strong financial characteristics but comparatively low product participation?",
+            "What combination of demographic and financial characteristics should be investigated for customer segmentation?",
+        ])
 
+    elif domain == "Human Resources / Workforce Analytics":
+        attrition = _question_column(columns, ["attrition", "left", "turnover", "exit"])
+        salary = _question_column(columns, ["salary", "income", "compensation", "wage"])
+        satisfaction = _question_column(columns, ["satisfaction", "engagement", "environment"])
+        if attrition and department:
+            questions.append(
+                f"Which {_pretty_column_name(department)} groups show the highest concentration of {_pretty_column_name(attrition)}?"
+            )
+        if attrition and salary:
+            questions.append(
+                f"How does {_pretty_column_name(attrition)} vary across {_pretty_column_name(salary)} levels?"
+            )
+        if attrition and satisfaction:
+            questions.append(
+                f"What relationship exists between {_pretty_column_name(satisfaction)} and {_pretty_column_name(attrition)}?"
+            )
+        if department and salary:
+            questions.append(
+                f"Which {_pretty_column_name(department)} groups have the highest average {_pretty_column_name(salary)}?"
+            )
+        questions.extend([
+            "Which employee segments should be investigated further for retention or workforce-planning decisions?",
+            "What employee characteristics are most strongly associated with the key workforce outcome in this dataset?",
+            "Which workforce groups show patterns that may require management attention?",
+        ])
+
+    elif domain == "Marketing / Customer Analytics":
+        conversion = _question_column(columns, ["conversion", "response", "purchase", "converted"])
+        campaign = _question_column(columns, ["campaign", "channel", "source", "medium"])
+        if campaign and conversion:
+            questions.append(
+                f"Which {_pretty_column_name(campaign)} groups are associated with the strongest {_pretty_column_name(conversion)} performance?"
+            )
+        if customer and conversion:
+            questions.append(
+                f"Which customer characteristics are associated with {_pretty_column_name(conversion)}?"
+            )
+        if income and conversion:
+            questions.append(
+                f"How does {_pretty_column_name(conversion)} vary across {_pretty_column_name(income)} levels?"
+            )
+        questions.extend([
+            "Which customer segments should be investigated for targeted campaign opportunities?",
+            "Which marketing or customer attributes appear most relevant to the observed response or conversion outcome?",
+            "Are there customer groups with strong engagement but comparatively weak conversion that require further investigation?",
+        ])
+
+    elif domain == "Retail / Sales Analytics":
+        metric = _question_column(columns, ["sales", "revenue", "profit", "amount"])
+        if product and metric:
+            questions.append(
+                f"Which {_pretty_column_name(product)} groups contribute the most {_pretty_column_name(metric)}?"
+            )
+        if geography and metric:
+            questions.append(
+                f"Which {_pretty_column_name(geography)} areas contribute most to {_pretty_column_name(metric)}?"
+            )
+        if time_col and metric:
+            questions.append(
+                f"What trend is visible in {_pretty_column_name(metric)} over {_pretty_column_name(time_col)}?"
+            )
+        if customer and metric:
+            questions.append(
+                f"Which customer segments contribute the highest {_pretty_column_name(metric)}?"
+            )
+        questions.extend([
+            "Which products or customer segments should be investigated for growth opportunities?",
+            "Where are the strongest and weakest business-performance patterns across the available sales dimensions?",
+            "Which segments show high activity but comparatively weak financial performance?",
+        ])
+
+    elif domain == "Healthcare Analytics":
+        outcome_health = _question_column(columns, ["diagnosis", "treatment", "outcome", "readmission", "discharge"])
+        if outcome_health and demographic:
+            questions.append(
+                f"How does {_pretty_column_name(outcome_health)} vary across {_pretty_column_name(demographic)} groups?"
+            )
+        if outcome_health and geography:
+            questions.append(
+                f"Which {_pretty_column_name(geography)} groups show the strongest concentration of {_pretty_column_name(outcome_health)}?"
+            )
+        questions.extend([
+            "Which patient segments show patterns that require further clinical or operational investigation?",
+            "What demographic or service-related characteristics are associated with the observed patient outcomes?",
+        ])
+
+    elif domain == "Education Analytics":
+        score = _question_column(columns, ["score", "marks", "grade", "result", "percentage"])
+        attendance = _question_column(columns, ["attendance", "absence", "present"])
+        if score and attendance:
+            questions.append(
+                f"What relationship exists between {_pretty_column_name(attendance)} and {_pretty_column_name(score)}?"
+            )
+        if score and demographic:
+            questions.append(
+                f"How does {_pretty_column_name(score)} vary across {_pretty_column_name(demographic)} groups?"
+            )
+        questions.extend([
+            "Which student segments show patterns that require academic support or further investigation?",
+            "Which available factors are most closely associated with student performance?",
+        ])
+
+    elif domain == "Manufacturing Analytics":
+        defect = _question_column(columns, ["defect", "failure", "quality", "rejection"])
+        machine = _question_column(columns, ["machine", "line", "equipment", "plant"])
+        if defect and machine:
+            questions.append(
+                f"Which {_pretty_column_name(machine)} groups have the highest concentration of {_pretty_column_name(defect)}?"
+            )
+        if defect and numeric:
+            metric = next((c for c in numeric if c != defect), None)
+            if metric:
+                questions.append(
+                    f"How does {_pretty_column_name(defect)} vary with {_pretty_column_name(metric)}?"
+                )
+        questions.extend([
+            "Which production segments should be investigated for quality or operational improvement?",
+            "Which available operating factors are most associated with the observed quality outcome?",
+        ])
+
+    elif domain == "Telecom / Churn Analytics":
+        churn = _question_column(columns, ["churn", "attrition", "left"])
+        tenure = _question_column(columns, ["tenure", "months", "duration"])
+        contract = _question_column(columns, ["contract", "plan", "service"])
+        if churn and tenure:
+            questions.append(
+                f"How does {_pretty_column_name(churn)} vary across {_pretty_column_name(tenure)} levels?"
+            )
+        if churn and contract:
+            questions.append(
+                f"Which {_pretty_column_name(contract)} groups show the highest concentration of {_pretty_column_name(churn)}?"
+            )
+        questions.extend([
+            "Which customer segments should be investigated for retention opportunities?",
+            "What customer characteristics are most associated with the observed churn pattern?",
+        ])
+
+    # -----------------------------
+    # Universal relationship questions
+    # -----------------------------
+    if len(numeric) >= 2:
         questions.append(
-            "Which columns have missing information "
-            "and what should be investigated?"
+            f"What relationship exists between {_pretty_column_name(numeric[0])} and {_pretty_column_name(numeric[1])}, and why might it matter for the business?"
         )
 
-    if df.duplicated().sum() > 0:
-
+    if categorical_business and numeric:
+        c = categorical_business[0]
+        m = numeric[0]
         questions.append(
-            "Are there duplicate records in the dataset "
-            "and why might they exist?"
+            f"Which {_pretty_column_name(c)} segments have the highest average {_pretty_column_name(m)}?"
         )
 
-    cleaned_questions = []
+    if time_col and numeric:
+        m = numeric[0]
+        questions.append(
+            f"What important trend or change is visible in {_pretty_column_name(m)} over {_pretty_column_name(time_col)}?"
+        )
 
+    # Add a data-quality/business-risk question only when the data actually has an issue.
+    if int(df.isna().sum().sum()) > 0:
+        questions.append(
+            "Which missing-data areas could affect the reliability of the business analysis?"
+        )
+
+    if int(df.duplicated().sum()) > 0:
+        questions.append(
+            "Could duplicate records materially affect the business metrics or segment analysis?"
+        )
+
+    # Final fallback for unusual datasets.
+    if not questions:
+        questions = [
+            "Which available business dimension shows the strongest difference in the main numeric measures?",
+            "What relationships between the available fields could explain an important business pattern?",
+            "Which segment or group should be investigated further based on the observed data?",
+        ]
+
+    # Remove duplicates while preserving the order of business relevance.
+    cleaned = []
+    seen = set()
     for question in questions:
+        q = re.sub(r"\\s+", " ", question).strip()
+        key = q.lower()
+        if q and key not in seen:
+            seen.add(key)
+            cleaned.append(q)
 
-        if question not in cleaned_questions:
-
-            cleaned_questions.append(question)
-
-    return cleaned_questions[:12]
+    return cleaned[:16]
 
 
 # ==========================================================
@@ -302,146 +525,88 @@ def _search_web(query, max_results=5):
 
 
 def _detect_business_domain(df):
-    """Identify a likely business domain from column names only."""
+    """Detect the business domain from specific combinations of real fields.
 
-    names = " ".join(
-        str(c).lower()
-        for c in df.columns
-    )
+    Generic fields such as Income, Amount, Customer or Status are deliberately
+    given little/no weight by themselves so unrelated datasets are not
+    incorrectly classified as HR or finance.
+    """
+    names = {_bi_norm(c) for c in df.columns}
+    joined = " | ".join(sorted(names))
 
-    domain_rules = [
+    signatures = {
+        "Short-Term Lending / Loan Analytics": [
+            ("loan amount", 7), ("interest rate", 7), ("credit score", 7),
+            ("loan status", 7), ("loan term", 6), ("emi", 6),
+            ("repayment", 5), ("borrower", 5), ("default", 5), ("loan", 4),
+        ],
+        "Banking / Financial Services": [
+            ("account number", 6), ("account", 4), ("transaction", 5),
+            ("deposit", 5), ("withdrawal", 5), ("balance", 4),
+            ("bank", 4), ("payment", 3),
+        ],
+        "Insurance Analytics": [
+            ("policy number", 6), ("policy", 5), ("premium", 5),
+            ("claim", 5), ("coverage", 5), ("insurance", 5),
+        ],
+        "Marketing / Campaign Analytics": [
+            ("campaign", 6), ("conversion", 6), ("click", 5),
+            ("impression", 5), ("lead", 5), ("response", 4),
+            ("channel", 3), ("marketing", 5),
+        ],
+        "Retail / Sales Analytics": [
+            ("retail sales", 7), ("warehouse sales", 7), ("retail transfers", 7),
+            ("revenue", 5), ("sales", 4), ("product", 3), ("quantity", 3),
+            ("order", 3), ("profit", 4),
+        ],
+        "Manufacturing Analytics": [
+            ("machine", 6), ("production", 6), ("defect", 6),
+            ("maintenance", 5), ("downtime", 5), ("quality", 4),
+            ("temperature", 4), ("pressure", 4),
+        ],
+        "Healthcare Analytics": [
+            ("patient", 6), ("diagnosis", 6), ("hospital", 6),
+            ("admission", 5), ("discharge", 5), ("treatment", 5),
+            ("disease", 5), ("medical", 5),
+        ],
+        "Education Analytics": [
+            ("student", 6), ("grade", 5), ("marks", 5),
+            ("attendance", 5), ("course", 4), ("exam", 4),
+            ("education", 5),
+        ],
+        "Telecom Analytics": [
+            ("churn", 6), ("contract", 5), ("internet service", 5),
+            ("monthly charges", 5), ("phone service", 5), ("tenure", 3),
+        ],
+        "Human Resources / Workforce Analytics": [
+            ("employee", 7), ("attrition", 7), ("job role", 6),
+            ("years at company", 7), ("monthly income", 6), ("overtime", 5),
+            ("employee number", 7), ("hire date", 6),
+        ],
+    }
 
-        (
-            "Retail / Sales Analytics",
-            [
-                "retail sales",
-                "retail transfers",
-                "warehouse sales",
-                "product",
-                "item",
-                "sales",
-                "quantity",
-                "order"
-            ]
-        ),
+    scored = []
+    for domain, rules in signatures.items():
+        score = 0
+        matched = []
+        for phrase, weight in rules:
+            p = _bi_norm(phrase)
+            if p in names or p in joined:
+                score += weight
+                matched.append(p)
+        scored.append((score, len(matched), domain, matched))
 
-        (
-            "Human Resources / Workforce Analytics",
-            [
-                "employee",
-                "attrition",
-                "jobrole",
-                "job role",
-                "department",
-                "salary",
-                "monthlyincome",
-                "overtime",
-                "satisfaction"
-            ]
-        ),
+    scored.sort(reverse=True)
+    if not scored or scored[0][0] < 6:
+        return "General Business Analytics"
 
-        (
-            "Marketing / Campaign Analytics",
-            [
-                "campaign",
-                "marketing",
-                "conversion",
-                "response",
-                "click",
-                "impression",
-                "lead",
-                "customer"
-            ]
-        ),
+    top = scored[0]
+    second = scored[1] if len(scored) > 1 else (0, 0, "", [])
+    # Require a meaningful lead where multiple domains have signals.
+    if top[0] >= 7 and (top[0] - second[0] >= 2 or top[1] >= 2):
+        return top[2]
 
-        (
-            "Finance / Risk Analytics",
-            [
-                "loan",
-                "credit",
-                "default",
-                "transaction",
-                "fraud",
-                "balance",
-                "interest",
-                "risk",
-                "amount"
-            ]
-        ),
-
-        (
-            "Healthcare Analytics",
-            [
-                "patient",
-                "diagnosis",
-                "hospital",
-                "admission",
-                "discharge",
-                "medical",
-                "treatment",
-                "disease"
-            ]
-        ),
-
-        (
-            "Education Analytics",
-            [
-                "student",
-                "grade",
-                "marks",
-                "score",
-                "attendance",
-                "course",
-                "exam",
-                "education"
-            ]
-        ),
-
-        (
-            "Manufacturing Analytics",
-            [
-                "machine",
-                "defect",
-                "production",
-                "maintenance",
-                "downtime",
-                "quality",
-                "temperature",
-                "pressure"
-            ]
-        ),
-
-        (
-            "Telecom Analytics",
-            [
-                "churn",
-                "tenure",
-                "contract",
-                "internet",
-                "telecom",
-                "monthlycharges",
-                "phone service"
-            ]
-        ),
-    ]
-
-    best_domain = "General Business Analytics"
-    best_score = 0
-
-    for domain, keywords in domain_rules:
-
-        score = sum(
-            1
-            for keyword in keywords
-            if keyword in names
-        )
-
-        if score > best_score:
-            best_domain = domain
-            best_score = score
-
-    return best_domain
-
+    return top[2] if top[0] >= 10 else "General Business Analytics"
 
 def _column_local_explanation(column, dtype):
     """Safe explanation when an exact online definition is not found."""
@@ -574,9 +739,21 @@ def generate_basic_data_explanation(df):
         f'"{domain}" dataset column definitions {column_text}'
     )
 
+    research_terms = {
+        "Short-Term Lending / Loan Analytics": "loan approval credit risk repayment default interest rate",
+        "Banking / Financial Services": "banking transaction account balance payment risk analytics",
+        "Insurance Analytics": "insurance policy premium claims coverage risk analytics",
+        "Marketing / Campaign Analytics": "campaign conversion customer response channel marketing analytics",
+        "Retail / Sales Analytics": "sales revenue product demand inventory retail analytics",
+        "Manufacturing Analytics": "production quality defects machine downtime manufacturing analytics",
+        "Healthcare Analytics": "patient treatment diagnosis hospital healthcare analytics",
+        "Education Analytics": "student performance attendance grades education analytics",
+        "Telecom Analytics": "customer churn telecom contract service analytics",
+        "Human Resources / Workforce Analytics": "employee attrition workforce job role retention analytics",
+    }.get(domain, "business performance analytics trends segmentation")
+
     queries.append(
-        f'{domain} data analytics business uses '
-        f'sales product performance inventory'
+        f'{domain} data analytics business uses {research_terms}'
     )
 
     all_results = []
@@ -699,6 +876,36 @@ def generate_basic_data_explanation(df):
             "Marketing performance monitoring",
         ]
 
+    elif "loan" in domain_lower:
+
+        business_uses = [
+            "Loan portfolio and approval analysis",
+            "Borrower segment comparison",
+            "Credit and repayment pattern analysis",
+            "Interest-rate and loan-term analysis",
+            "Default / risk monitoring",
+        ]
+
+    elif "banking" in domain_lower or "financial" in domain_lower:
+
+        business_uses = [
+            "Transaction and account activity analysis",
+            "Balance and payment behaviour analysis",
+            "Customer/account segmentation",
+            "Financial risk monitoring",
+            "Exception and anomaly investigation",
+        ]
+
+    elif "insurance" in domain_lower:
+
+        business_uses = [
+            "Policy and premium analysis",
+            "Claims pattern analysis",
+            "Customer and coverage segmentation",
+            "Loss/risk monitoring",
+            "Portfolio performance analysis",
+        ]
+
     else:
 
         business_uses = [
@@ -794,6 +1001,261 @@ def generate_basic_data_explanation(df):
     }
 
 
+
+# ==========================================================
+# DATA-DRIVEN BUSINESS INSIGHT ENGINE
+# ==========================================================
+
+def _bi_norm(value):
+    return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
+
+
+def _bi_pretty(value):
+    return re.sub(r"\s+", " ", re.sub(r"[_-]+", " ", str(value))).strip().title()
+
+
+def _bi_fmt(value):
+    try:
+        value = float(value)
+        if abs(value) >= 1_000_000:
+            return f"{value/1_000_000:.2f}M"
+        if abs(value) >= 1_000:
+            return f"{value:,.0f}"
+        return f"{value:,.2f}"
+    except Exception:
+        return str(value)
+
+
+# Consistent professional palette used by both dashboard views.
+# The palette is applied to generated charts so the dashboard is
+# colourful without changing the user's chart layout or interactions.
+DASHBOARD_PALETTE = [
+    "#22D3EE", "#3B82F6", "#8B5CF6", "#EC4899", "#FB923C",
+    "#34D399", "#FBBF24", "#60A5FA", "#A78BFA", "#F472B6",
+    "#2DD4BF", "#FB7185"
+]
+
+
+def _apply_dashboard_palette(sheets):
+    """Assign attractive, different chart colours while preserving order."""
+    for sheet_index, sheet in enumerate(sheets or []):
+        for chart_index, chart in enumerate(sheet.get("charts", [])):
+            chart["color"] = DASHBOARD_PALETTE[
+                (sheet_index * 5 + chart_index) % len(DASHBOARD_PALETTE)
+            ]
+    return sheets
+
+
+def _style_neon_figure(fig, chart=None):
+    """Apply the supplied reference's midnight-blue/neon visual language to Plotly charts."""
+    try:
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(7,18,40,0.72)",
+            font=dict(
+                family="Inter, Segoe UI, sans-serif",
+                color="#DCEBFF",
+                size=12,
+            ),
+            title=dict(
+                font=dict(
+                    color="#F6FAFF",
+                    size=17,
+                ),
+                x=0.02,
+                xanchor="left",
+            ),
+            margin=dict(l=42, r=24, t=62, b=44),
+            hoverlabel=dict(
+                bgcolor="#0A1730",
+                bordercolor="#2B5B91",
+                font=dict(color="#F7FAFF", size=12),
+            ),
+            legend=dict(
+                font=dict(color="#AFC3DF", size=11),
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            xaxis=dict(
+                color="#90A9CA",
+                gridcolor="rgba(55,91,145,.28)",
+                linecolor="rgba(77,113,169,.35)",
+                zerolinecolor="rgba(77,113,169,.25)",
+                title_font=dict(color="#8EA9CA"),
+            ),
+            yaxis=dict(
+                color="#90A9CA",
+                gridcolor="rgba(55,91,145,.28)",
+                linecolor="rgba(77,113,169,.35)",
+                zerolinecolor="rgba(77,113,169,.25)",
+                title_font=dict(color="#8EA9CA"),
+            ),
+        )
+
+        # Give pie/donut charts the same multi-neon visual language as the reference.
+        if chart and str(chart.get("chart_type", "")).lower() == "pie":
+            neon = [
+                "#22D3EE", "#8B5CF6", "#EC4899", "#FB923C",
+                "#34D399", "#3B82F6", "#FBBF24", "#F472B6"
+            ]
+            for trace in fig.data:
+                if hasattr(trace, "marker") and trace.marker is not None:
+                    try:
+                        trace.marker.colors = neon
+                    except Exception:
+                        pass
+
+        # Slight glow-like line treatment.
+        for trace in fig.data:
+            try:
+                if getattr(trace, "mode", None) and "lines" in str(trace.mode):
+                    trace.line.width = 3
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+
+    return fig
+
+
+def build_business_insights(df, sheets=None):
+    """Generate insights only from fields that actually exist in the uploaded data."""
+    rows = []
+    n = max(len(df), 1)
+
+    missing = int(df.isna().sum().sum())
+    duplicates = int(df.duplicated().sum())
+
+    if missing:
+        affected = int((df.isna().sum() > 0).sum())
+        pct = missing / (len(df) * max(len(df.columns), 1)) * 100
+        rows.append({
+            "Area": "Data Completeness",
+            "Problem": f"Missing values are present across {affected} columns.",
+            "Evidence": f"{missing:,} missing cells ({pct:.2f}% of all cells).",
+            "Business Impact": "Incomplete fields can reduce the reliability of segment comparisons and downstream reporting.",
+            "Severity": "HIGH" if pct >= 5 else "MEDIUM"
+        })
+
+    if duplicates:
+        pct = duplicates / n * 100
+        rows.append({
+            "Area": "Record Quality",
+            "Problem": "Duplicate records are present and may affect totals or frequency-based analysis.",
+            "Evidence": f"{duplicates:,} duplicate rows ({pct:.2f}% of records).",
+            "Business Impact": "Repeated records can inflate counts, averages, and grouped business metrics.",
+            "Severity": "HIGH" if pct >= 5 else "MEDIUM"
+        })
+
+    numeric = list(df.select_dtypes(include="number").columns)
+    categorical = list(df.select_dtypes(include=["object", "category", "bool"]).columns)
+
+    # Dominant segments: only when a categorical field has meaningful concentration.
+    for col in categorical[:12]:
+        series = df[col].dropna().astype(str)
+        if series.empty or series.nunique() < 2 or series.nunique() > min(30, max(2, int(len(series) * 0.25))):
+            continue
+        shares = series.value_counts(normalize=True)
+        top_value = shares.index[0]
+        top_share = float(shares.iloc[0]) * 100
+        if top_share >= 50:
+            rows.append({
+                "Area": f"{_bi_pretty(col)} Concentration",
+                "Problem": f"The dataset is concentrated in the '{top_value}' segment.",
+                "Evidence": f"'{top_value}' represents {top_share:.1f}% of observed records.",
+                "Business Impact": "A highly concentrated segment can dominate aggregate KPIs and may hide differences in smaller groups.",
+                "Severity": "MEDIUM"
+            })
+            break
+
+    # Outcome/rate fields: detect only from actual values and column names.
+    outcome_terms = ("status", "outcome", "result", "response", "default", "churn", "converted", "approved", "rejected", "fraud", "claim")
+    for col in categorical:
+        name = _bi_norm(col)
+        if not any(term in name for term in outcome_terms):
+            continue
+        series = df[col].dropna().astype(str)
+        if series.nunique() < 2 or series.nunique() > 10:
+            continue
+        counts = series.value_counts()
+        top = counts.index[0]
+        share = float(counts.iloc[0]) / len(series) * 100
+        rows.append({
+            "Area": f"{_bi_pretty(col)} Outcome Mix",
+            "Problem": f"The observed { _bi_pretty(col).lower() } is led by '{top}'.",
+            "Evidence": f"'{top}' accounts for {share:.1f}% of non-missing records ({int(counts.iloc[0]):,} of {len(series):,}).",
+            "Business Impact": "The dominant outcome should be interpreted alongside the smaller outcome groups to understand balance and potential business exposure.",
+            "Severity": "MEDIUM" if share >= 80 else "LOW"
+        })
+        break
+
+    # Numeric dispersion and outliers.
+    for col in numeric[:15]:
+        series = pd.to_numeric(df[col], errors="coerce").dropna()
+        if len(series) < 10 or series.nunique() < 5:
+            continue
+        q1, q3 = series.quantile([0.25, 0.75])
+        iqr = q3 - q1
+        if iqr <= 0:
+            continue
+        outlier_count = int(((series < q1 - 1.5 * iqr) | (series > q3 + 1.5 * iqr)).sum())
+        outlier_pct = outlier_count / len(series) * 100
+        if outlier_pct >= 5:
+            rows.append({
+                "Area": f"{_bi_pretty(col)} Variability",
+                "Problem": f"The measure contains a noticeable share of values outside the interquartile range.",
+                "Evidence": f"{outlier_count:,} of {len(series):,} observed values ({outlier_pct:.1f}%) fall beyond the 1.5×IQR rule.",
+                "Business Impact": "Extreme values can materially influence averages and may represent important high-value or exceptional cases.",
+                "Severity": "MEDIUM"
+            })
+            break
+
+    # Strong numeric associations, without claiming causation.
+    if len(numeric) >= 2:
+        corr = df[numeric].corr(numeric_only=True).abs()
+        pairs = []
+        for i, a in enumerate(numeric):
+            for b in numeric[i+1:]:
+                value = corr.loc[a, b]
+                if pd.notna(value):
+                    pairs.append((float(value), a, b, float(df[[a,b]].corr().iloc[0,1])))
+        if pairs:
+            value, a, b, signed = max(pairs, key=lambda x: x[0])
+            if value >= 0.60:
+                direction = "positive" if signed > 0 else "negative"
+                rows.append({
+                    "Area": "Numeric Relationship",
+                    "Problem": f"A strong {direction} association is visible between {_bi_pretty(a)} and {_bi_pretty(b)}.",
+                    "Evidence": f"Observed Pearson correlation: {signed:.2f}.",
+                    "Business Impact": "This relationship is a useful candidate for deeper analysis, segmentation, or predictive modelling; it does not establish causation.",
+                    "Severity": "LOW"
+                })
+
+    # Useful numeric range insight if no richer pattern was found.
+    if numeric and len(rows) < 4:
+        col = numeric[0]
+        series = pd.to_numeric(df[col], errors="coerce").dropna()
+        if not series.empty:
+            rows.append({
+                "Area": f"{_bi_pretty(col)} Business Range",
+                "Problem": f"The observed { _bi_pretty(col).lower() } spans a wide operating range.",
+                "Evidence": f"Minimum {_bi_fmt(series.min())}; median {_bi_fmt(series.median())}; maximum {_bi_fmt(series.max())}.",
+                "Business Impact": "Segmenting this measure into meaningful business bands may reveal differences that are hidden in overall averages.",
+                "Severity": "LOW"
+            })
+
+    if not rows:
+        rows.append({
+            "Area": "Dataset Structure",
+            "Problem": "No high-priority business barrier was automatically identified from the available fields.",
+            "Evidence": f"The dataset contains {len(df):,} records and {len(df.columns):,} columns with the currently available structure.",
+            "Business Impact": "The dashboard and statistical views should be used to investigate domain-specific patterns further.",
+            "Severity": "LOW"
+        })
+
+    return pd.DataFrame(rows[:10])
+
+
 # ==========================================================
 # PAGE CONFIGURATION
 # ==========================================================
@@ -813,22 +1275,579 @@ st.markdown(
     """
     <style>
 
+    /* ======================================================
+       REMOVE STREAMLIT DEFAULT TOP BAR / WHITE SPACE
+       Keep the custom DATA ANALYZER canvas continuous.
+       ====================================================== */
+
+    header[data-testid="stHeader"],
+    .stApp > header {
+        background: transparent !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        border: 0 !important;
+        box-shadow: none !important;
+    }
+
+    header[data-testid="stHeader"] * {
+        visibility: hidden !important;
+    }
+
+    [data-testid="stToolbar"] {
+        display: none !important;
+    }
+
+    [data-testid="stDecoration"] {
+        display: none !important;
+    }
+
+    [data-testid="stStatusWidget"] {
+        display: none !important;
+    }
+
+    div[data-testid="stAppViewContainer"] {
+        background: transparent !important;
+    }
+
+    div[data-testid="stAppViewContainer"] > section.main {
+        background: transparent !important;
+    }
+
+    .main .block-container {
+        padding-top: 0.35rem !important;
+    }
+
+    /* ======================================================
+       DATA ANALYZER — NEON ANALYTICS / AI COMMAND CENTER
+       Visual direction based on the supplied reference image:
+       midnight blue + electric cyan + violet + magenta + amber.
+       ====================================================== */
+
+    :root {
+        --bg: #050A18;
+        --bg2: #08132A;
+        --panel: #0B1730;
+        --panel2: #101F40;
+        --panel3: #152852;
+        --border: #243A67;
+        --cyan: #22D3EE;
+        --blue: #3B82F6;
+        --violet: #8B5CF6;
+        --magenta: #EC4899;
+        --pink: #F472B6;
+        --green: #34D399;
+        --amber: #FBBF24;
+        --orange: #FB923C;
+        --red: #FB7185;
+        --text: #F7FAFF;
+        --muted: #9FB1D0;
+    }
+
+    .stApp {
+        background:
+            radial-gradient(circle at 12% 5%, rgba(34,211,238,.14), transparent 25%),
+            radial-gradient(circle at 90% 8%, rgba(139,92,246,.17), transparent 27%),
+            radial-gradient(circle at 82% 90%, rgba(236,72,153,.10), transparent 28%),
+            radial-gradient(circle at 8% 88%, rgba(59,130,246,.10), transparent 25%),
+            linear-gradient(135deg, #030712 0%, #071225 42%, #081A35 100%);
+        color: var(--text);
+    }
+
+    .stApp::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: .20;
+        background-image:
+            linear-gradient(rgba(34,211,238,.06) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(34,211,238,.06) 1px, transparent 1px);
+        background-size: 44px 44px;
+        mask-image: linear-gradient(to bottom, black, transparent 85%);
+        z-index: 0;
+    }
+
+    .main .block-container {
+        position: relative;
+        z-index: 1;
+        max-width: 1500px;
+        padding-top: 1.3rem;
+        padding-bottom: 3rem;
+    }
+
+    /* ---------- Header ---------- */
+
     .main-title {
-        font-size: 38px;
+        font-size: 3.1rem;
+        line-height: 1.05;
+        font-weight: 900;
+        letter-spacing: -.045em;
+        background: linear-gradient(
+            90deg,
+            #FFFFFF 0%,
+            #B9F7FF 28%,
+            #55E7FF 52%,
+            #A78BFA 78%,
+            #F9A8D4 100%
+        );
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        text-shadow: 0 0 30px rgba(34,211,238,.18);
+    }
+
+    .main-subtitle {
+        margin-top: 7px;
+        color: #82DFF5;
+        font-size: 14px;
+        letter-spacing: .035em;
+    }
+
+    .bi-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 14px;
+        border-radius: 999px;
+        color: #B9F7FF;
+        font-size: 12px;
         font-weight: 700;
+        background: rgba(15,31,64,.82);
+        border: 1px solid rgba(34,211,238,.32);
+        box-shadow: 0 0 24px rgba(34,211,238,.08);
+    }
+
+    .hero-panel {
+        position: relative;
+        overflow: hidden;
+        margin: 18px 0 22px;
+        padding: 26px 30px;
+        border-radius: 22px;
+        border: 1px solid rgba(73,216,255,.36);
+        background:
+            radial-gradient(circle at 82% 30%, rgba(139,92,246,.26), transparent 30%),
+            radial-gradient(circle at 18% 85%, rgba(34,211,238,.14), transparent 32%),
+            linear-gradient(135deg, rgba(10,28,59,.96), rgba(14,30,67,.92));
+        box-shadow:
+            0 20px 60px rgba(0,0,0,.32),
+            inset 0 1px 0 rgba(255,255,255,.05),
+            0 0 40px rgba(34,211,238,.06);
+    }
+
+    .hero-panel::after {
+        content: "";
+        position: absolute;
+        width: 260px;
+        height: 260px;
+        right: -80px;
+        top: -120px;
+        border-radius: 50%;
+        background: rgba(236,72,153,.13);
+        filter: blur(55px);
+    }
+
+    .hero-kicker {
+        color: #63E6FF;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .16em;
+        margin-bottom: 8px;
+    }
+
+    .hero-title {
+        color: #F8FBFF;
+        font-size: 28px;
+        line-height: 1.18;
+        font-weight: 850;
+        margin-bottom: 9px;
+    }
+
+    .hero-copy {
+        max-width: 920px;
+        color: #AFC0DD;
+        font-size: 14px;
+        line-height: 1.7;
+    }
+
+    /* ---------- Sidebar ---------- */
+
+    section[data-testid="stSidebar"] {
+        background:
+            radial-gradient(circle at 18% 10%, rgba(34,211,238,.12), transparent 28%),
+            radial-gradient(circle at 90% 75%, rgba(139,92,246,.16), transparent 30%),
+            linear-gradient(180deg, #050D1F 0%, #07152D 48%, #091A35 100%);
+        border-right: 1px solid rgba(58,101,168,.42);
+    }
+
+    section[data-testid="stSidebar"] > div {
+        background: transparent;
+    }
+
+    .bi-brand {
+        padding: 8px 2px 14px;
+    }
+
+    .bi-brand-name {
+        font-size: 21px;
+        font-weight: 900;
+        letter-spacing: .02em;
+        background: linear-gradient(90deg, #F8FAFF, #61E7FF, #A78BFA);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+    }
+
+    .bi-brand-subtitle {
+        margin-top: 4px;
+        color: #7FA4D5;
+        font-size: 11px;
+        line-height: 1.5;
+    }
+
+    section[data-testid="stSidebar"] hr {
+        border-color: rgba(66,96,147,.35);
+    }
+
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] .stMarkdown p {
+        color: #BFD0EA !important;
+    }
+
+    /* ---------- General typography ---------- */
+
+    h1, h2, h3, h4, h5, h6 {
+        color: #F4F8FF !important;
+        letter-spacing: -.02em;
     }
 
     .section-title {
-        font-size: 26px;
-        font-weight: 650;
-        margin-top: 20px;
+        font-size: 28px;
+        font-weight: 850;
+        background: linear-gradient(90deg, #FFFFFF, #60E8FF, #A78BFA);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        margin-top: 16px;
+        margin-bottom: 6px;
+    }
+
+    .stMarkdown, .stText, p, li {
+        color: #B9C8E0;
+    }
+
+    .stCaption {
+        color: #7891B5 !important;
+    }
+
+    /* ---------- Tabs ---------- */
+
+    button[data-baseweb="tab"] {
+        color: #8299BB !important;
+        font-weight: 700 !important;
+        border-radius: 10px 10px 0 0 !important;
+    }
+
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: #72E9FF !important;
+        background: rgba(34,211,238,.06) !important;
+    }
+
+    div[data-baseweb="tab-highlight"] {
+        background: linear-gradient(
+            90deg,
+            #22D3EE,
+            #3B82F6,
+            #8B5CF6,
+            #EC4899
+        ) !important;
+        height: 3px !important;
+        box-shadow: 0 0 14px rgba(34,211,238,.45);
+    }
+
+    /* ---------- Cards / containers ---------- */
+
+    div[data-testid="stMetric"] {
+        position: relative;
+        overflow: hidden;
+        padding: 16px 17px;
+        min-height: 118px;
+        border-radius: 16px;
+        border: 1px solid rgba(77,111,168,.48);
+        background:
+            linear-gradient(145deg, rgba(17,34,69,.96), rgba(9,22,48,.96));
+        box-shadow:
+            0 12px 30px rgba(0,0,0,.20),
+            inset 0 1px 0 rgba(255,255,255,.045);
+    }
+
+    div[data-testid="stMetric"]::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 3px;
+        background: linear-gradient(
+            90deg,
+            #22D3EE,
+            #3B82F6,
+            #8B5CF6,
+            #EC4899
+        );
+    }
+
+    div[data-testid="stMetric"] label {
+        color: #87A5CA !important;
+        font-weight: 700 !important;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #F7FAFF !important;
+        font-size: 1.85rem !important;
+        font-weight: 850 !important;
+        text-shadow: 0 0 20px rgba(34,211,238,.10);
+    }
+
+    div[data-testid="stMetricDelta"] {
+        color: #5EEAD4 !important;
     }
 
     .business-card {
         padding: 20px;
-        border-radius: 12px;
-        border: 1px solid #E5E7EB;
-        background-color: #FFFFFF;
+        border-radius: 16px;
+        border: 1px solid rgba(75,108,163,.45);
+        background: linear-gradient(145deg, #0D1D3B, #0A1730);
+        box-shadow: 0 12px 30px rgba(0,0,0,.20);
+    }
+
+    /* ---------- Buttons ---------- */
+
+    .stButton > button,
+    .stDownloadButton > button {
+        border-radius: 10px !important;
+        border: 1px solid rgba(62,116,193,.62) !important;
+        color: #D9F8FF !important;
+        background: linear-gradient(135deg, #102B55, #183C72) !important;
+        box-shadow: 0 5px 18px rgba(0,0,0,.20) !important;
+        font-weight: 750 !important;
+        transition: all .18s ease;
+    }
+
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {
+        border-color: #22D3EE !important;
+        color: #FFFFFF !important;
+        box-shadow:
+            0 0 22px rgba(34,211,238,.18),
+            0 8px 24px rgba(0,0,0,.24) !important;
+        transform: translateY(-1px);
+    }
+
+    button[kind="primary"] {
+        background: linear-gradient(
+            100deg,
+            #2563EB,
+            #7C3AED,
+            #DB2777
+        ) !important;
+        border-color: rgba(139,92,246,.75) !important;
+    }
+
+    /* ---------- Inputs ---------- */
+
+    div[data-baseweb="select"] > div,
+    div[data-baseweb="input"] > div,
+    div[data-testid="stTextInput"] input,
+    textarea {
+        background: #0B1934 !important;
+        color: #EAF4FF !important;
+        border-color: #2C4776 !important;
+    }
+
+    div[data-baseweb="select"] span {
+        color: #D7E5F7 !important;
+    }
+
+    div[data-testid="stFileUploader"] {
+        padding: 4px;
+        border-radius: 14px;
+        background: rgba(9,25,52,.72);
+        border: 1px dashed rgba(34,211,238,.55);
+    }
+
+    div[data-testid="stFileUploaderDropzone"] {
+        background: linear-gradient(135deg, #0A1B37, #10264B) !important;
+        border-color: rgba(67,153,225,.55) !important;
+    }
+
+    /* ---------- Expanders ---------- */
+
+    div[data-testid="stExpander"] {
+        border: 1px solid rgba(65,100,157,.45) !important;
+        border-radius: 14px !important;
+        background: rgba(9,24,51,.78) !important;
+        overflow: hidden;
+    }
+
+    /* ---------- Alerts ---------- */
+
+    div[data-testid="stAlert"] {
+        border-radius: 13px;
+        border: 1px solid rgba(67,118,181,.40);
+        background: rgba(12,31,64,.80);
+    }
+
+    /* ---------- Dataframes ---------- */
+
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #263F6B;
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 10px 28px rgba(0,0,0,.20);
+    }
+
+    /* ---------- Code / links ---------- */
+
+    code {
+        color: #67E8F9 !important;
+    }
+
+    a {
+        color: #67E8F9 !important;
+    }
+
+    /* ---------- Slider / checkbox / radio ---------- */
+
+    div[data-testid="stSlider"] [role="slider"] {
+        background: #22D3EE !important;
+    }
+
+    /* ---------- Dedicated dashboard ---------- */
+
+    .neon-dashboard-title {
+        font-size: 2.65rem;
+        font-weight: 900;
+        letter-spacing: -.04em;
+        background: linear-gradient(
+            90deg,
+            #FFFFFF,
+            #7DEBFF 35%,
+            #8B5CF6 68%,
+            #F472B6
+        );
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        text-shadow: 0 0 35px rgba(34,211,238,.16);
+    }
+
+    .neon-dashboard-subtitle {
+        color: #8FB7DD;
+        font-size: 13px;
+        margin-top: 4px;
+        margin-bottom: 18px;
+    }
+
+    .neon-kpi {
+        position: relative;
+        min-height: 125px;
+        padding: 18px 19px;
+        border-radius: 17px;
+        overflow: hidden;
+        border: 1px solid rgba(74,115,177,.48);
+        background:
+            radial-gradient(circle at 100% 0%, var(--glow), transparent 42%),
+            linear-gradient(145deg, #102349, #09172F);
+        box-shadow:
+            0 14px 36px rgba(0,0,0,.25),
+            inset 0 1px 0 rgba(255,255,255,.05);
+    }
+
+    .neon-kpi::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        height: 4px;
+        width: 100%;
+        background: var(--accent);
+        box-shadow: 0 0 18px var(--accent);
+    }
+
+    .neon-kpi-label {
+        color: #8EA8CA;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .12em;
+    }
+
+    .neon-kpi-value {
+        color: #F8FBFF;
+        font-size: 29px;
+        line-height: 1.1;
+        font-weight: 900;
+        margin-top: 11px;
+    }
+
+    .neon-kpi-icon {
+        position: absolute;
+        right: 14px;
+        top: 14px;
+        width: 38px;
+        height: 38px;
+        border-radius: 11px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--accent);
+        background: rgba(255,255,255,.055);
+        border: 1px solid rgba(255,255,255,.08);
+        box-shadow: 0 0 18px var(--glow);
+    }
+
+    .neon-section-card {
+        padding: 15px 17px;
+        border-radius: 14px;
+        border: 1px solid rgba(72,107,166,.42);
+        background: linear-gradient(145deg, rgba(14,31,63,.95), rgba(8,20,43,.96));
+        box-shadow: 0 12px 30px rgba(0,0,0,.20);
+    }
+
+    .neon-section-label {
+        color: #60E7FF;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .12em;
+    }
+
+    .neon-section-value {
+        color: #F8FBFF;
+        font-size: 17px;
+        font-weight: 800;
+        margin-top: 5px;
+    }
+
+    /* ---------- Scrollbars ---------- */
+
+    ::-webkit-scrollbar {
+        width: 9px;
+        height: 9px;
+    }
+
+    ::-webkit-scrollbar-track {
+        background: #050B18;
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: #203A67;
+        border-radius: 10px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+        background: #315B9A;
     }
 
     </style>
@@ -868,24 +1887,31 @@ if "research_sources" not in st.session_state:
 if "basic_data_explanation" not in st.session_state:
     st.session_state.basic_data_explanation = None
 
-if "real_user_result" not in st.session_state:
-    st.session_state.real_user_result = None
-
 
 # ==========================================================
 # HEADER
 # ==========================================================
 
 st.markdown(
-    '<div class="main-title">'
-    '📊 Automated Business Intelligence Platform'
-    '</div>',
+    """
+    <div style="padding:4px 0 0;">
+        <div class="main-title">📊 DATA ANALYZER</div>
+        <div class="main-subtitle">
+            Interactive Business Intelligence • AI Insights • Advanced Analytics
+        </div>
+    </div>
+    <div class="hero-panel">
+        <div class="hero-kicker">AI-powered analytics workspace</div>
+        <div class="hero-title">Turn raw business data into a decision-ready command center.</div>
+        <div class="hero-copy">
+            Upload a CSV or Excel dataset and DATA ANALYZER automatically builds
+            business-focused sheets, colourful interactive charts, statistics,
+            domain research, management insights, recommendations, professional
+            Ask Data questions and a compact final report.
+        </div>
+    </div>
+    """,
     unsafe_allow_html=True
-)
-
-st.write(
-    "Upload a dataset and automatically create dashboards, "
-    "analysis, domain research, insights and recommendations."
 )
 
 
@@ -895,15 +1921,36 @@ st.write(
 
 with st.sidebar:
 
-    st.header("⚙️ Platform Controls")
+    st.markdown(
+        """
+        <div class="bi-brand">
+            <div class="bi-brand-name">◈ DATA ANALYZER</div>
+            <div class="bi-brand-subtitle">
+                Intelligent Business Analytics Command Center
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        '<div class="neon-section-card">'
+        '<div class="neon-section-label">Workspace</div>'
+        '<div class="neon-section-value">Upload & Configure</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
     uploaded_file = st.file_uploader(
-        "Upload CSV / Excel",
+        "📁 Upload CSV / Excel",
         type=[
             "csv",
             "xlsx",
             "xls"
-        ]
+        ],
+        help="Upload the dataset you want DATA ANALYZER to analyze."
     )
 
     sheet_count = st.selectbox(
@@ -916,6 +1963,422 @@ with st.sidebar:
         "4 sheets = 20 charts\n\n"
         "5 sheets = 25 charts"
     )
+
+
+
+# ==========================================================
+# INTERACTIVE DASHBOARD PAGE
+# ==========================================================
+
+
+def _get_page_parameter():
+    """Read the optional Streamlit page query parameter."""
+    try:
+        return str(st.query_params.get("page", "")).strip().lower()
+    except Exception:
+        try:
+            params = st.experimental_get_query_params()
+            value = params.get("page", [""])
+            return str(value[0] if isinstance(value, list) else value).strip().lower()
+        except Exception:
+            return ""
+
+
+def _save_dashboard_snapshot(dataframe, sheets):
+    """Save the current main-app dashboard state for the dedicated page."""
+    reports_dir = Path("reports")
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = reports_dir / "dashboard_snapshot.pkl"
+    with open(snapshot_path, "wb") as snapshot_file:
+        pickle.dump(
+            {
+                "df": dataframe.copy(),
+                "sheets": sheets,
+            },
+            snapshot_file,
+        )
+    return snapshot_path
+
+
+def _dashboard_filter_state(sheet_index):
+    """Return the filter dictionary used by the copied dashboard page."""
+    if "legacy_dashboard_filters" not in st.session_state:
+        st.session_state.legacy_dashboard_filters = {}
+    st.session_state.legacy_dashboard_filters.setdefault(sheet_index, {})
+    return st.session_state.legacy_dashboard_filters[sheet_index]
+
+
+def _clear_dashboard_sheet_filter(sheet_index):
+    if "legacy_dashboard_filters" in st.session_state:
+        st.session_state.legacy_dashboard_filters[sheet_index] = {}
+
+
+def _clear_dashboard_all_filters():
+    st.session_state.legacy_dashboard_filters = {}
+
+
+def _apply_dashboard_filters(dataframe, filters):
+    result = dataframe.copy()
+    for column, value in filters.items():
+        if column not in result.columns or value in (None, "All"):
+            continue
+        result = result[result[column].astype(str) == str(value)]
+    return result.copy()
+
+
+def _dashboard_attach_selection(fig, category, dataframe):
+    """Add [column, value] metadata so the old dashboard-style click filter works."""
+    if not category or category not in dataframe.columns:
+        return fig
+
+    values = dataframe[category].dropna().astype(str).unique().tolist()
+    if not values:
+        return fig
+
+    for trace in fig.data:
+        try:
+            trace_x = list(trace.x) if trace.x is not None else []
+            trace_y = list(trace.y) if trace.y is not None else []
+
+            # Most categorical charts place the category on x.
+            if trace_x and len(trace_x) == len(trace_y):
+                trace.customdata = [[category, str(v)] for v in trace_x]
+            elif trace.labels is not None:
+                labels = list(trace.labels)
+                trace.customdata = [[category, str(v)] for v in labels]
+            elif trace_y:
+                trace.customdata = [[category, str(v)] for v in trace_y]
+        except Exception:
+            pass
+
+    return fig
+
+
+def _dashboard_capture_selection(event, sheet_index):
+    """Read a Plotly point selection in the same way as the old dashboard."""
+    if event is None:
+        return False
+
+    try:
+        points = list(event.selection.points or [])
+    except Exception:
+        try:
+            points = list(event.get("selection", {}).get("points", []))
+        except Exception:
+            points = []
+
+    if not points:
+        return False
+
+    point = points[0]
+    customdata = point.get("customdata")
+    if not isinstance(customdata, (list, tuple)) or len(customdata) < 2:
+        return False
+
+    column = customdata[0]
+    value = customdata[1]
+    filters = _dashboard_filter_state(sheet_index)
+
+    if filters.get(column) == value:
+        return False
+
+    filters[column] = value
+    return True
+
+
+def _dashboard_chart(fig, chart, filtered_df, sheet_index, chart_index):
+    """Render one generated chart using the visual/interaction pattern of dashboard_app.py."""
+    category = chart.get("category")
+
+    fig = _dashboard_attach_selection(
+        fig,
+        category,
+        filtered_df,
+    )
+
+    fig.update_layout(
+        height=360,
+        margin=dict(l=35, r=20, t=55, b=50),
+        hovermode="closest",
+        legend_title_text="",
+    )
+
+    event = st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key=(
+            f"copied_dashboard_chart_"
+            f"{sheet_index}_"
+            f"{chart.get('chart_id', chart_index)}"
+        ),
+        on_select="rerun",
+        selection_mode="points",
+    )
+
+    return _dashboard_capture_selection(event, sheet_index)
+
+
+def _render_interactive_dashboard_page(df, sheets):
+    """
+    Dedicated dashboard page copied from the old dashboard_app.py layout.
+
+    Important difference from the old standalone app:
+    the page does NOT ask for a dataset. It uses the dataset already
+    uploaded/generated by the main Automated BI application.
+    """
+
+    # If a dashboard snapshot was created by an older version in which every
+    # chart used the same default blue, upgrade that snapshot to the new
+    # professional palette. User-customized multi-colour dashboards are kept.
+    existing_colors = [
+        chart.get("color")
+        for sheet in sheets or []
+        for chart in sheet.get("charts", [])
+        if chart.get("color")
+    ]
+    if existing_colors and len(set(existing_colors)) == 1:
+        _apply_dashboard_palette(sheets)
+
+    # ========================================================
+    # OLD DASHBOARD STYLING / HEADER
+    # ========================================================
+    st.markdown(
+        """
+        <div class="neon-dashboard-title">◈ Analytics Command Center</div>
+        <div class="neon-dashboard-subtitle">
+            Interactive dashboard with AI insights, advanced analytics and
+            Power BI-style sheet-level filtering.
+        </div>
+        <div class="hero-panel" style="margin-top:4px;">
+            <div class="hero-kicker">Live business dashboard</div>
+            <div class="hero-title" style="font-size:23px;">
+                Explore performance, patterns and management signals.
+            </div>
+            <div class="hero-copy">
+                Use slicers and chart selections to explore the uploaded dataset.
+                Every sheet uses the same analytical source and updates its
+                related charts when filters are applied.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        "[← Back to Main Analysis](http://localhost:8501/)"
+    )
+
+    # ========================================================
+    # KPI CARDS — same visual idea as the old dashboard
+    # ========================================================
+    total_charts = sum(
+        len(sheet.get("charts", []))
+        for sheet in sheets
+    )
+
+    numeric_columns = df.select_dtypes(include="number").columns.tolist()
+    primary_metric = numeric_columns[0] if numeric_columns else None
+    average_metric = (
+        f"{df[primary_metric].mean():,.2f}"
+        if primary_metric and len(df)
+        else "—"
+    )
+
+    k1, k2, k3, k4 = st.columns(4)
+    kpi_items = [
+        (k1, "Total Records", f"{len(df):,}", "#22D3EE", "#22D3EE20", "◉"),
+        (k2, "Dashboard Sheets", f"{len(sheets):,}", "#8B5CF6", "#8B5CF620", "✦"),
+        (k3, "Average Metric", average_metric, "#34D399", "#34D39920", "↗"),
+        (k4, "Dashboard Charts", f"{total_charts:,}", "#EC4899", "#EC489920", "◈"),
+    ]
+    for col, label, value, accent, glow, icon in kpi_items:
+        with col:
+            st.markdown(
+                f'<div class="neon-kpi" style="--accent:{accent};--glow:{glow};">'
+                f'<div class="neon-kpi-icon">{icon}</div>'
+                f'<div class="neon-kpi-label">{label}</div>'
+                f'<div class="neon-kpi-value">{value}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    st.write("")
+
+    # ========================================================
+    # GLOBAL CLEAR — copied from old dashboard
+    # ========================================================
+    if st.button("🧹 Clear All Sheet Filters"):
+        _clear_dashboard_all_filters()
+        st.rerun()
+
+    st.divider()
+
+    if not sheets:
+        st.warning("No generated dashboard sheets are available.")
+        st.markdown("[← Open Main Streamlit Application](http://localhost:8501/)")
+        return
+
+    # ========================================================
+    # SHEETS — same tabs + two-column layout as old dashboard
+    # ========================================================
+    tabs = st.tabs([
+        sheet.get("name", "Dashboard")
+        for sheet in sheets
+    ])
+
+    for sheet_index, (tab, sheet) in enumerate(zip(tabs, sheets)):
+        with tab:
+            st.markdown(
+                f'<div class="neon-section-card">'
+                f'<div class="neon-section-label">ANALYTICAL SHEET</div>'
+                f'<div class="neon-section-value">📁 {sheet.get("name", "Dashboard")}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            st.caption(
+                sheet.get(
+                    "description",
+                    "Business dashboard analysis"
+                )
+            )
+
+            filters = _dashboard_filter_state(sheet_index)
+
+            c1, c2 = st.columns([5, 1])
+            with c1:
+                if filters:
+                    st.info(
+                        "🔎 Active filters: " +
+                        " • ".join(
+                            f"{key}: {value}"
+                            for key, value in filters.items()
+                        )
+                    )
+                else:
+                    st.caption(
+                        "💡 Click a category/value in a chart. "
+                        "All charts on this sheet will update."
+                    )
+            with c2:
+                if st.button(
+                    "✖ Clear",
+                    key=f"copy_clear_sheet_{sheet_index}",
+                    disabled=not bool(filters),
+                    use_container_width=True,
+                ):
+                    _clear_dashboard_sheet_filter(sheet_index)
+                    st.rerun()
+
+            filtered_df = _apply_dashboard_filters(df, filters)
+            st.caption(
+                f"Showing {len(filtered_df):,} of {len(df):,} records"
+            )
+
+            charts = sorted(
+                sheet.get("charts", []),
+                key=lambda chart: chart.get("position", 999)
+            )
+
+            columns = st.columns(2)
+
+            for chart_index, chart in enumerate(charts):
+                with columns[chart_index % 2]:
+                    try:
+                        fig = create_chart(
+                            filtered_df,
+                            category=chart.get("category"),
+                            metric=chart.get("metric"),
+                            chart_type=chart.get("chart_type", "Bar"),
+                            color=chart.get("color", "#22D3EE"),
+                            title=chart.get("title", "Business Chart")
+                        )
+
+                        fig = _style_neon_figure(fig, chart)
+
+                        selection_changed = _dashboard_chart(
+                            fig,
+                            chart,
+                            filtered_df,
+                            sheet_index,
+                            chart_index,
+                        )
+
+                        if selection_changed:
+                            st.rerun()
+
+                    except Exception as exc:
+                        st.error(
+                            f"Unable to render "
+                            f"'{chart.get('title', 'Business Chart')}': {exc}"
+                        )
+
+            st.success(
+                f"✅ {sheet.get('name', 'Dashboard')}: "
+                f"{len(charts)} interactive charts"
+            )
+
+    st.divider()
+    st.metric("TOTAL DASHBOARD CHARTS", total_charts)
+
+    st.markdown("### 📌 Dashboard Page Link")
+    st.code(
+        "http://localhost:8501/?page=dashboard",
+        language="text"
+    )
+    st.caption(
+        "This dashboard is a copy of the old dashboard page layout "
+        "inside the same Streamlit application. It uses the dataset "
+        "already uploaded in the main application, so no second upload is required."
+    )
+
+
+# ==========================================================
+# CHECK FOR THE DEDICATED DASHBOARD PAGE
+# ==========================================================
+
+_requested_page = _get_page_parameter()
+
+if _requested_page == "dashboard":
+
+    # First use the active Streamlit session.
+    dashboard_df = st.session_state.get("df")
+    dashboard_sheets = st.session_state.get("sheets", [])
+
+    # If the PDF link is opened in a new browser session, recover
+    # the last generated dashboard from the saved report snapshot.
+    if dashboard_df is None:
+        snapshot_path = Path("reports") / "dashboard_snapshot.pkl"
+
+        if snapshot_path.exists():
+            try:
+                with open(snapshot_path, "rb") as snapshot_file:
+                    snapshot = pickle.load(snapshot_file)
+
+                dashboard_df = snapshot.get("df")
+                dashboard_sheets = snapshot.get("sheets", [])
+            except Exception as snapshot_error:
+                st.error(
+                    "Unable to load the saved dashboard: "
+                    f"{snapshot_error}"
+                )
+                st.stop()
+
+    if dashboard_df is None:
+        st.warning(
+            "No dashboard data is available yet. "
+            "Please return to the main page and upload a dataset first."
+        )
+        st.markdown(
+            "[← Open Main Streamlit Application](http://localhost:8501/)"
+        )
+        st.stop()
+
+    _render_interactive_dashboard_page(
+        dashboard_df,
+        dashboard_sheets
+    )
+
+    st.stop()
 
 
 # ==========================================================
@@ -976,14 +2439,14 @@ if uploaded_file:
                         chart_index + 1
                     )
 
-                    chart.setdefault(
-                        "color",
-                        "#2563EB"
-                    )
+                    chart["color"] = DASHBOARD_PALETTE[
+                        (sheet_index * 5 + chart_index) % len(DASHBOARD_PALETTE)
+                    ]
 
             st.session_state.insights = (
-                generate_insights(
-                    df
+                build_business_insights(
+                    df,
+                    st.session_state.sheets
                 )
             )
 
@@ -1090,10 +2553,55 @@ if uploaded_file:
 
 else:
 
-    st.info(
-        "👈 Upload your CSV or Excel file from the sidebar."
+    st.markdown(
+        """
+        <div class="hero-panel" style="margin-top:4px;">
+            <div class="hero-kicker">Workspace ready</div>
+            <div class="hero-title">Your analytics command center is ready.</div>
+            <div class="hero-copy">
+                Start by uploading your CSV or Excel file from the sidebar.
+                The platform will adapt its dashboard topics, charts, insights,
+                questions and recommendations to the actual structure of your data.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
+    st.markdown("### ✦ What your workspace will generate")
+
+    f1, f2, f3, f4 = st.columns(4)
+
+    cards = [
+        (f1, "#22D3EE", "◉", "Interactive Dashboards",
+         "4–5 business sheets with 5 colourful charts per sheet."),
+        (f2, "#8B5CF6", "✦", "AI Business Insights",
+         "Signals, barriers, trends and management focus areas."),
+        (f3, "#EC4899", "◈", "Smart Ask Data",
+         "Professional questions generated from your actual data."),
+        (f4, "#FB923C", "↗", "Decision Report",
+         "Compact PDF report with insights and dashboard access."),
+    ]
+
+    for col, accent, icon, title, copy in cards:
+        with col:
+            st.markdown(
+                f"""
+                <div class="neon-kpi"
+                     style="--accent:{accent};--glow:{accent}22;">
+                    <div class="neon-kpi-icon">{icon}</div>
+                    <div class="neon-kpi-label">{title}</div>
+                    <div style="color:#9FB1D0;font-size:12px;line-height:1.55;margin-top:10px;">
+                        {copy}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    st.info("👈 Upload your CSV or Excel file from the sidebar to start the analysis.")
     st.stop()
 
 
@@ -1261,10 +2769,9 @@ with tabs[1]:
                         ci + 1
                     )
 
-                    chart.setdefault(
-                        "color",
-                        "#2563EB"
-                    )
+                    chart["color"] = DASHBOARD_PALETTE[
+                        (si * 5 + ci) % len(DASHBOARD_PALETTE)
+                    ]
 
             st.rerun()
 
@@ -1344,11 +2851,6 @@ with tabs[1]:
                 chart.setdefault(
                     "position",
                     chart_index + 1
-                )
-
-                chart.setdefault(
-                    "color",
-                    "#2563EB"
                 )
 
             st.write(
@@ -1663,7 +3165,7 @@ with tabs[1]:
 
                         selected_chart["chart_type"] = "Bar"
 
-                        selected_chart["color"] = "#2563EB"
+                        selected_chart["color"] = "#22D3EE"
 
                         selected_chart["title"] = (
                             f"Business Chart "
@@ -1717,13 +3219,15 @@ with tabs[1]:
                         ),
                         color=chart.get(
                             "color",
-                            "#2563EB"
+                            "#22D3EE"
                         ),
                         title=chart.get(
                             "title",
                             "Business Chart"
                         )
                     )
+
+                    fig = _style_neon_figure(fig, chart)
 
                     st.plotly_chart(
                         fig,
@@ -1814,197 +3318,287 @@ with tabs[2]:
 with tabs[3]:
 
     st.markdown(
-        '<div class="section-title">'
-        '🚨 Business Insights & Barriers'
-        '</div>',
+        '<div class="section-title">🚨 Business Insights</div>',
         unsafe_allow_html=True
     )
 
     st.write(
-        "First understand what the uploaded data represents. "
-        "Then review what the actual data shows and which areas "
-        "may become business barriers."
-    )
-
-    basic = st.session_state.get(
-        "basic_data_explanation"
-    )
-
-    if basic:
-
-        st.markdown(
-            "## 📚 Basic Data Explanation"
-        )
-
-        st.caption(
-            basic.get(
-                "research_status",
-                "Online research status unavailable"
-            )
-        )
-
-        st.markdown(
-            "### 🏢 What is this dataset?"
-        )
-
-        st.info(
-            basic.get(
-                "dataset_description",
-                "No dataset explanation is available."
-            )
-        )
-
-        st.markdown(
-            "### 🔎 Detected Business Domain"
-        )
-
-        st.success(
-            basic.get(
-                "domain",
-                "General Business Analytics"
-            )
-        )
-
-        st.markdown(
-            "### 🎯 What can this type of data be used for?"
-        )
-
-        uses = basic.get(
-            "business_uses",
-            []
-        )
-
-        if uses:
-
-            for use in uses:
-                st.write(
-                    f"- {use}"
-                )
-
-        else:
-
-            st.write(
-                "The available online research did not provide "
-                "enough domain-specific information."
-            )
-
-        st.markdown(
-            "### 📋 Column-by-Column Explanation"
-        )
-
-        column_rows = basic.get(
-            "column_rows",
-            []
-        )
-
-        if column_rows:
-
-            st.dataframe(
-                pd.DataFrame(
-                    column_rows
-                ),
-                use_container_width=True,
-                hide_index=True
-            )
-
-        else:
-
-            st.info(
-                "No column explanations were generated."
-            )
-
-        evidence = basic.get(
-            "online_evidence",
-            []
-        )
-
-        if evidence:
-
-            st.markdown(
-                "### 🌐 What online sources say"
-            )
-
-            for item in evidence[:5]:
-
-                st.write(
-                    f"- {item}"
-                )
-
-        sources = basic.get(
-            "sources",
-            []
-        )
-
-        if sources:
-
-            st.markdown(
-                "### 📚 Online Sources Used"
-            )
-
-            for source in sources:
-
-                title = source.get(
-                    "title",
-                    "Web Source"
-                )
-
-                url = source.get(
-                    "url",
-                    ""
-                )
-
-                if url:
-
-                    st.markdown(
-                        f"- [{title}]({url})"
-                    )
-
-        st.divider()
-
-    st.markdown(
-        "## 📊 What Your Uploaded Data Shows"
+        "This page interprets the actual dashboard and dataset "
+        "evidence to identify important business patterns, barriers "
+        "and areas that require further investigation."
     )
 
     insights = st.session_state.insights
 
-    if not insights.empty:
+    # ------------------------------------------------------
+    # EXECUTIVE BUSINESS SUMMARY
+    # ------------------------------------------------------
+
+    st.markdown("### 📌 Executive Business Summary")
+
+    if insights is None or getattr(insights, "empty", True):
+
+        st.info(
+            "No business insights were generated for this dataset."
+        )
+
+    else:
+
+        insight_count = len(insights)
+        high_count = 0
+        medium_count = 0
+        low_count = 0
+
+        if "Severity" in insights.columns:
+            severity_series = (
+                insights["Severity"]
+                .astype(str)
+                .str.upper()
+            )
+            high_count = int((severity_series == "HIGH").sum())
+            medium_count = int((severity_series == "MEDIUM").sum())
+            low_count = int((severity_series == "LOW").sum())
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        with c1:
+            st.metric("Business Findings", insight_count)
+
+        with c2:
+            st.metric("High Attention", high_count)
+
+        with c3:
+            st.metric("Medium Attention", medium_count)
+
+        with c4:
+            st.metric("Monitoring Areas", low_count)
+
+        st.markdown(
+            "The findings below are based on the available dataset "
+            "evidence and the analytical outputs generated by the platform."
+        )
+
+    st.divider()
+
+    # ------------------------------------------------------
+    # KEY BUSINESS SIGNALS
+    # ------------------------------------------------------
+
+    st.markdown("### 📊 Key Business Signals")
+
+    if insights is not None and not insights.empty:
+
+        signal_rows = list(
+            insights.head(4).iterrows()
+        )
+
+        signal_columns = st.columns(
+            max(1, min(2, len(signal_rows)))
+        )
+
+        for display_index, (_, row) in enumerate(signal_rows):
+
+            with signal_columns[display_index % len(signal_columns)]:
+
+                area = str(
+                    row.get("Area", "Business Area")
+                )
+
+                problem = str(
+                    row.get("Problem", "Important business pattern identified.")
+                )
+
+                evidence = str(
+                    row.get("Evidence", "Evidence available in the analysis.")
+                )
+
+                severity = str(
+                    row.get("Severity", "INFO")
+                ).upper()
+
+                icon = {
+                    "HIGH": "🔴",
+                    "MEDIUM": "🟠",
+                    "LOW": "🔵"
+                }.get(severity, "🔵")
+
+                st.markdown(
+                    f"""
+                    <div class="business-card">
+                        <h4>{icon} {area}</h4>
+                        <p><b>What the data shows:</b><br>{problem}</p>
+                        <p><b>Evidence:</b><br>{evidence}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+    else:
+
+        st.info("No key business signals are available yet.")
+
+    st.divider()
+
+    # ------------------------------------------------------
+    # BUSINESS PROBLEMS / BARRIERS
+    # ------------------------------------------------------
+
+    st.markdown("### 🚨 Business Problems / Barriers")
+
+    if insights is not None and not insights.empty:
 
         for _, row in insights.iterrows():
 
-            severity = row["Severity"]
+            area = str(
+                row.get("Area", "Business Area")
+            )
+
+            problem = str(
+                row.get("Problem", "Business pattern identified.")
+            )
+
+            impact = str(
+                row.get("Business Impact", "Further business investigation may be required.")
+            )
+
+            evidence = str(
+                row.get("Evidence", "Evidence available in the dataset analysis.")
+            )
+
+            severity = str(
+                row.get("Severity", "INFO")
+            ).upper()
 
             if severity == "HIGH":
-
                 st.error(
-                    f"🔴 {row['Area']}: "
-                    f"{row['Problem']}"
+                    f"🔴 {area}\n\n"
+                    f"**Problem:** {problem}\n\n"
+                    f"**Why it matters:** {impact}\n\n"
+                    f"**Evidence:** {evidence}"
                 )
 
             elif severity == "MEDIUM":
-
                 st.warning(
-                    f"🟠 {row['Area']}: "
-                    f"{row['Problem']}"
+                    f"🟠 {area}\n\n"
+                    f"**Problem:** {problem}\n\n"
+                    f"**Why it matters:** {impact}\n\n"
+                    f"**Evidence:** {evidence}"
                 )
 
             else:
-
                 st.info(
-                    f"🔵 {row['Area']}: "
-                    f"{row['Problem']}"
+                    f"🔵 {area}\n\n"
+                    f"**Problem / Observation:** {problem}\n\n"
+                    f"**Why it matters:** {impact}\n\n"
+                    f"**Evidence:** {evidence}"
                 )
 
-            st.write(
-                f"**Business Impact:** "
-                f"{row['Business Impact']}"
+    else:
+
+        st.info(
+            "The application could not identify a business barrier "
+            "from the available evidence."
+        )
+
+    st.divider()
+
+    # ------------------------------------------------------
+    # IMPORTANT TRENDS
+    # ------------------------------------------------------
+
+    st.markdown("### 📈 Important Trends / Patterns")
+
+    if insights is not None and not insights.empty:
+
+        for _, row in insights.head(6).iterrows():
+
+            area = str(
+                row.get("Area", "Business Area")
             )
 
-            st.write(
-                f"**Evidence:** "
-                f"{row['Evidence']}"
+            problem = str(
+                row.get("Problem", "Pattern identified from the dataset.")
             )
 
-            st.divider()
+            st.markdown(
+                f"**{area} →** {problem}"
+            )
+
+    else:
+
+        st.info("No trend-level observations are available.")
+
+    st.divider()
+
+    # ------------------------------------------------------
+    # DATA QUALITY / ATTENTION AREAS
+    # ------------------------------------------------------
+
+    st.markdown("### ⚠️ Areas Requiring Attention")
+
+    missing_total = int(
+        df.isna().sum().sum()
+    )
+
+    duplicate_total = int(
+        df.duplicated().sum()
+    )
+
+    attention_items = []
+
+    if missing_total > 0:
+        attention_items.append(
+            f"🟠 Missing data requires review across "
+            f"{int((df.isna().sum() > 0).sum())} columns."
+        )
+    else:
+        attention_items.append(
+            "🟢 No missing values were detected in the uploaded dataset."
+        )
+
+    if duplicate_total > 0:
+        attention_items.append(
+            f"🟠 {duplicate_total:,} duplicate rows require review."
+        )
+    else:
+        attention_items.append(
+            "🟢 No duplicate rows were detected."
+        )
+
+    for item in attention_items:
+        st.markdown(f"- {item}")
+
+    # ------------------------------------------------------
+    # OVERALL BUSINESS INTERPRETATION
+    # ------------------------------------------------------
+
+    st.divider()
+
+    st.markdown("### 📌 Overall Business Interpretation")
+
+    if insights is not None and not insights.empty:
+
+        areas = []
+        for _, row in insights.head(5).iterrows():
+            area = str(row.get("Area", ""))
+            if area and area not in areas:
+                areas.append(area)
+
+        focus_text = ", ".join(areas)
+
+        st.success(
+            "The dataset contains business patterns that can be "
+            "translated into specific areas for investigation. "
+            f"The main areas identified by the current analysis are: "
+            f"{focus_text}. Review the dashboard charts and statistical "
+            "results before making operational decisions."
+        )
+
+    else:
+
+        st.info(
+            "No overall business interpretation is available yet."
+        )
 
 
 # ==========================================================
@@ -2018,15 +3612,16 @@ with tabs[4]:
         unsafe_allow_html=True
     )
 
-    research = st.session_state.get(
-        "research_result",
-        {}
+    research = st.session_state.research_result
+    detailed_research = st.session_state.get(
+        "basic_data_explanation",
+        None
     )
 
     if not research:
 
         st.info(
-            "📂 Upload a dataset to start domain research."
+            "Upload a dataset to start domain research."
         )
 
     else:
@@ -2036,136 +3631,320 @@ with tabs[4]:
             "General Business Analytics"
         )
 
-        st.success(
-            f"🏢 Detected Business Domain: {domain}"
+        # --------------------------------------------------
+        # DETECTED DOMAIN
+        # --------------------------------------------------
+
+        st.markdown(
+            f"""
+            <div style="background:#E8F8EE;padding:20px 24px;"
+                 "border-radius:12px;color:#087F3F;font-size:18px;">
+                🔎 <b>Detected dataset domain:</b> {domain}
+            </div>
+            """,
+            unsafe_allow_html=True
         )
 
         st.divider()
 
-        # ==================================================
-        # DATASET OVERVIEW
-        # ==================================================
+        # --------------------------------------------------
+        # RESEARCH BASED ANALYSIS
+        # --------------------------------------------------
 
-        st.markdown("## 📊 Dataset Overview")
+        st.markdown("### 🌐 Research-Based Analysis")
 
-        overview_col1, overview_col2, overview_col3, overview_col4 = st.columns(4)
-
-        with overview_col1:
-            st.metric("Total Records", f"{len(df):,}")
-
-        with overview_col2:
-            st.metric("Total Columns", f"{len(df.columns):,}")
-
-        with overview_col3:
-            st.metric(
-                "Numeric Columns",
-                f"{len(df.select_dtypes(include='number').columns):,}"
+        st.write(
+            research.get(
+                "analysis",
+                "No research result available."
             )
-
-        with overview_col4:
-            st.metric(
-                "Categorical Columns",
-                f"{len(df.select_dtypes(include=['object', 'category']).columns):,}"
-            )
-
-        st.divider()
-
-        # ==================================================
-        # BASIC DATA EXPLANATION
-        # ==================================================
-
-        basic = st.session_state.get(
-            "basic_data_explanation"
         )
 
-        if basic:
+        # --------------------------------------------------
+        # WHAT IS THIS DATASET?
+        # --------------------------------------------------
 
-            st.markdown("## 📚 What Is This Dataset?")
+        st.markdown("### 🏢 What is this dataset?")
 
-            description = basic.get(
-                "dataset_description",
-                "No dataset description is available."
+        dataset_description = (
+            detailed_research.get(
+                "dataset_description"
+            )
+            if detailed_research
+            else research.get(
+                "analysis",
+                "No dataset explanation available."
+            )
+        )
+
+        st.info(dataset_description)
+
+        # --------------------------------------------------
+        # DETECTED BUSINESS DOMAIN
+        # --------------------------------------------------
+
+        st.markdown("### 🔎 Detected Business Domain")
+
+        st.success(domain)
+
+        # --------------------------------------------------
+        # DATASET PROFILE
+        # --------------------------------------------------
+
+        st.markdown("### 📊 Dataset Profile")
+
+        numeric_count = len(
+            df.select_dtypes(include="number").columns
+        )
+
+        categorical_count = len(
+            df.select_dtypes(
+                include=["object", "category", "bool"]
+            ).columns
+        )
+
+        date_count = len(
+            df.select_dtypes(
+                include=["datetime"]
+            ).columns
+        )
+
+        missing_count = int(
+            df.isna().sum().sum()
+        )
+
+        duplicate_count = int(
+            df.duplicated().sum()
+        )
+
+        profile_cols = st.columns(6)
+
+        profile_values = [
+            ("Records", f"{len(df):,}"),
+            ("Columns", f"{len(df.columns):,}"),
+            ("Numeric", f"{numeric_count:,}"),
+            ("Categorical", f"{categorical_count:,}"),
+            ("Missing", f"{missing_count:,}"),
+            ("Duplicates", f"{duplicate_count:,}"),
+        ]
+
+        for column, (label, value) in zip(
+            profile_cols,
+            profile_values
+        ):
+            with column:
+                st.metric(label, value)
+
+        # --------------------------------------------------
+        # WHAT CAN THIS DATA BE USED FOR?
+        # --------------------------------------------------
+
+        st.markdown("### 🎯 What can this type of data be used for?")
+
+        business_uses = (
+            detailed_research.get(
+                "business_uses",
+                []
+            )
+            if detailed_research
+            else []
+        )
+
+        if not business_uses:
+            business_uses = [
+                "Business performance monitoring",
+                "Trend and group comparison",
+                "Data quality monitoring",
+                "Identification of important business patterns",
+                "Decision support and further investigation",
+            ]
+
+        for use_case in business_uses:
+            st.markdown(
+                f"- {use_case}"
             )
 
-            st.info(description)
+        # --------------------------------------------------
+        # IMPORTANT VARIABLES
+        # --------------------------------------------------
 
-            st.markdown("## 🎯 What Can This Data Be Used For?")
+        st.markdown("### ⭐ Important Variables")
 
-            uses = basic.get("business_uses", [])
+        numeric_columns = [
+            str(c)
+            for c in df.select_dtypes(
+                include="number"
+            ).columns
+        ]
 
-            if uses:
-                for use in uses:
-                    st.write(f"✓ {use}")
+        categorical_columns = [
+            str(c)
+            for c in df.select_dtypes(
+                include=["object", "category", "bool"]
+            ).columns
+        ]
+
+        variable_cols = st.columns(2)
+
+        with variable_cols[0]:
+            st.markdown("**📌 KPI / Measure Candidates**")
+            if numeric_columns:
+                for col in numeric_columns[:10]:
+                    st.markdown(f"- `{col}`")
             else:
-                st.write(
-                    "The available research did not identify enough "
-                    "domain-specific business uses."
+                st.write("No numeric measures detected.")
+
+        with variable_cols[1]:
+            st.markdown("**📌 Dimension / Segmentation Candidates**")
+            if categorical_columns:
+                for col in categorical_columns[:10]:
+                    st.markdown(f"- `{col}`")
+            else:
+                st.write("No categorical dimensions detected.")
+
+        # --------------------------------------------------
+        # COLUMN-BY-COLUMN EXPLANATION
+        # --------------------------------------------------
+
+        st.markdown("### 📋 Column-by-Column Explanation")
+
+        column_rows = (
+            detailed_research.get(
+                "column_rows",
+                []
+            )
+            if detailed_research
+            else []
+        )
+
+        if column_rows:
+
+            column_df = pd.DataFrame(
+                column_rows
+            )
+
+            st.dataframe(
+                column_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        else:
+
+            fallback_rows = []
+
+            for column in df.columns:
+
+                series = df[column]
+                dtype = str(series.dtype)
+
+                fallback_rows.append(
+                    {
+                        "Column": column,
+                        "Data Type": dtype,
+                        "Meaning / Explanation": (
+                            "Numeric field that can be summarized and compared."
+                            if pd.api.types.is_numeric_dtype(series)
+                            else
+                            "Categorical/text field that can be grouped and compared."
+                        ),
+                        "Missing Values": int(series.isna().sum()),
+                        "Unique Values": int(series.nunique(dropna=True)),
+                    }
                 )
 
-            st.divider()
+            st.dataframe(
+                pd.DataFrame(fallback_rows),
+                use_container_width=True,
+                hide_index=True
+            )
 
-            # ----------------------------------------------
-            # COLUMN EXPLANATION
-            # ----------------------------------------------
+        # --------------------------------------------------
+        # POTENTIAL RELATIONSHIPS
+        # --------------------------------------------------
 
-            st.markdown("## 📋 Column-by-Column Explanation")
+        st.markdown("### 🔗 Potential Variable Relationships")
 
-            column_rows = basic.get("column_rows", [])
+        if len(numeric_columns) >= 2:
 
-            if column_rows:
-                column_df = pd.DataFrame(column_rows)
-
-                st.dataframe(
-                    column_df,
-                    use_container_width=True,
-                    hide_index=True
+            st.info(
+                "Potential relationships to investigate: "
+                f"`{numeric_columns[0]}` ↔ `{numeric_columns[1]}`"
+                + (
+                    f", `{numeric_columns[0]}` ↔ `{numeric_columns[2]}`."
+                    if len(numeric_columns) >= 3
+                    else "."
                 )
-            else:
-                st.info("No column explanations were generated.")
+                + " These are analytical candidates, not proof of causation."
+            )
 
-            st.divider()
+        elif numeric_columns and categorical_columns:
 
-            # ----------------------------------------------
-            # ONLINE EVIDENCE
-            # ----------------------------------------------
+            st.info(
+                f"Compare `{numeric_columns[0]}` across "
+                f"`{categorical_columns[0]}` to investigate group-level patterns."
+            )
 
-            evidence = basic.get("online_evidence", [])
+        else:
 
-            if evidence:
-                st.markdown("## 🌐 What Online Sources Say")
+            st.info(
+                "The current dataset does not contain enough structured "
+                "fields to suggest a variable relationship automatically."
+            )
 
-                for item in evidence[:8]:
-                    st.write(f"• {item}")
+        # --------------------------------------------------
+        # BUSINESS QUESTIONS
+        # --------------------------------------------------
 
-                st.divider()
+        st.markdown("### 💬 Business Questions This Dataset Can Answer")
 
-        # ==================================================
-        # RESEARCH-BASED ANALYSIS
-        # ==================================================
-
-        st.markdown("## 🔬 Research-Based Analysis")
-
-        analysis = research.get(
-            "analysis",
-            "No research analysis is available."
+        generated_questions = generate_data_questions(
+            df
         )
 
-        st.write(analysis)
+        for index, question in enumerate(
+            generated_questions[:10],
+            start=1
+        ):
+            st.markdown(
+                f"**{index}.** {question}"
+            )
 
-        st.divider()
+        # --------------------------------------------------
+        # DATA QUALITY OBSERVATIONS
+        # --------------------------------------------------
 
-        # ==================================================
-        # SOURCES
-        # ==================================================
+        st.markdown("### 🧹 Data Quality Observations")
 
-        sources = st.session_state.get(
-            "research_sources",
-            []
-        )
+        if missing_count == 0:
+            st.success(
+                "No missing values were detected in the uploaded dataset."
+            )
+        else:
+            st.warning(
+                f"{missing_count:,} missing values were detected. "
+                "Columns containing missing data should be reviewed before modeling or reporting."
+            )
+
+        if duplicate_count == 0:
+            st.success(
+                "No duplicate rows were detected."
+            )
+        else:
+            st.warning(
+                f"{duplicate_count:,} duplicate rows were detected. "
+                "Review whether they represent valid repeated observations or duplicate records."
+            )
+
+        # --------------------------------------------------
+        # RESEARCH SOURCES
+        # --------------------------------------------------
+
+        sources = st.session_state.research_sources
 
         if sources:
 
-            st.markdown("## 📚 Online Sources Used")
+            st.markdown("### 📚 Research Sources")
 
             for source in sources:
 
@@ -2179,30 +3958,36 @@ with tabs[4]:
                     ""
                 )
 
+                snippet = source.get(
+                    "snippet",
+                    ""
+                )
+
                 if url:
                     st.markdown(
-                        f"- [{title}]({url})"
+                        f"**{title}**"
                     )
+                    if snippet:
+                        st.caption(snippet)
+                    st.markdown(
+                        f"[Open source →]({url})"
+                    )
+                    st.divider()
+
         else:
-            st.info("No external sources were returned.")
 
-        st.divider()
-
-        # ==================================================
-        # RESEARCH LIMITATION
-        # ==================================================
-
-        st.markdown("### ℹ️ Research Limitation")
+            st.caption(
+                "No external research sources were returned. "
+                "The displayed explanations are based on the uploaded dataset structure."
+            )
 
         st.caption(
-            "Online research is used to provide business and industry "
-            "context. Where an exact source definition cannot be verified, "
-            "the explanation is presented as an interpretation rather than "
-            "a confirmed definition."
+            "Field meanings that cannot be verified from an authoritative "
+            "source are presented as analytical interpretations rather than "
+            "confirmed data-dictionary definitions."
         )
 
 
-# ==========================================================
 # RECOMMENDATIONS
 # ==========================================================
 
@@ -2524,455 +4309,487 @@ def _binary_positive_mask(series):
     )
 
 
-def _answer_user_request(
-    df,
-    request,
-    target_dimension=None
-):
+def _answer_user_request(df, request, target_dimension=None):
+    """Answer professional natural-language questions directly from the uploaded dataframe."""
+    if df is None or df.empty:
+        return {
+            "mode": "analysis",
+            "title": "No Data",
+            "answer": "Please upload a dataset before asking a question.",
+            "evidence": "No dataframe is currently available.",
+            "table": None,
+            "note": "Upload a CSV or Excel dataset and ask a business question."
+        }
 
-    """Answer common natural-language questions directly from the uploaded dataframe.
-    No fixed HR numbers are used; every displayed value is calculated from df at runtime.
-    """
-
-    q = str(
-        request or ""
-    ).strip().lower()
-
-    if not q:
+    q_original = str(request or "").strip()
+    if not q_original:
         return None
 
-    target_col = _find_column_ci(
-        df,
-        [
-            target_dimension or "",
-            "Attrition",
-            "Churn",
-            "Default",
-            "Fraud",
-            "Converted",
-            "Response",
-            "Purchased",
-            "Returned",
-            "Defect",
-            "Late",
-            "Stockout",
-            "Outcome",
-            "Target",
-            "Status"
-        ]
-    )
+    q = q_original.lower().strip()
 
+    def normalize(value):
+        return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
+
+    normalized_q = normalize(q)
+    all_columns = list(df.columns)
+    numeric_columns = df.select_dtypes(include="number").columns.tolist()
+    categorical_columns = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+
+    def find_column(columns, aliases):
+        normalized_columns = {c: normalize(c) for c in columns}
+        # Exact/contained matches first.
+        for alias in aliases:
+            a = normalize(alias)
+            for col, col_norm in normalized_columns.items():
+                if col_norm == a or (a and a in col_norm) or (col_norm and col_norm in a):
+                    return col
+        # Word-set match.
+        for alias in aliases:
+            a_words = set(normalize(alias).split())
+            if not a_words:
+                continue
+            for col, col_norm in normalized_columns.items():
+                if a_words.issubset(set(col_norm.split())):
+                    return col
+        return None
+
+    def mentioned_column(columns):
+        # Prefer exact column-name phrases and longer names.
+        ordered = sorted(columns, key=lambda c: len(normalize(c)), reverse=True)
+        for col in ordered:
+            n = normalize(col)
+            if n and n in normalized_q:
+                return col
+        return None
+
+    # ------------------------------------------------------
+    # Detect outcome/target columns before generic numeric logic.
+    # This is the important fix for questions such as:
+    # "Which department has the highest attrition?"
+    # ------------------------------------------------------
+    attrition_col = find_column(all_columns, [
+        "Attrition", "Employee Attrition", "Turnover", "Employee Turnover", "Left"
+    ])
+    churn_col = find_column(all_columns, ["Churn", "Customer Churn", "Churn Status"])
+    outcome_col = find_column(all_columns, [
+        "Default", "Fraud", "Converted", "Conversion", "Response", "Purchased",
+        "Purchase", "Returned", "Defect", "Stockout", "Late", "Outcome", "Status"
+    ])
+
+    target_col = target_dimension if target_dimension in all_columns else None
+    if target_col is None:
+        if attrition_col and any(x in normalized_q for x in ["attrition", "turnover", "left employee"]):
+            target_col = attrition_col
+        elif churn_col and "churn" in normalized_q:
+            target_col = churn_col
+        elif outcome_col and any(x in normalized_q for x in [
+            "default", "fraud", "converted", "conversion", "response", "purchased",
+            "purchase", "returned", "defect", "stockout", "late", "outcome", "status"
+        ]):
+            target_col = outcome_col
+
+    def positive_mask(series):
+        """Return a boolean mask for the positive outcome in common binary targets."""
+        s = series.copy()
+        if pd.api.types.is_numeric_dtype(s):
+            numeric = pd.to_numeric(s, errors="coerce")
+            # Common binary encodings: 1 = positive, 0 = negative.
+            if numeric.notna().any() and set(numeric.dropna().unique()).issubset({0, 1}):
+                return numeric.eq(1).fillna(False)
+
+        positive_words = {
+            "yes", "y", "true", "1", "left", "attrited", "attrition", "churned", "churn",
+            "default", "fraud", "converted", "conversion", "purchased", "purchase",
+            "returned", "return", "defect", "defective", "late", "stockout", "positive"
+        }
+        values = s.astype(str).str.strip().str.lower()
+        normalized_values = values.map(normalize)
+        return normalized_values.apply(
+            lambda v: v in positive_words or any(w in v for w in positive_words if len(w) > 3)
+        ).fillna(False)
+
+    # Detect the dimension explicitly named in the question.
     dimension = None
+    if target_col is not None:
+        dimension_candidates = [c for c in all_columns if c != target_col]
+    else:
+        dimension_candidates = all_columns
 
-    for col in df.columns:
+    dimension = mentioned_column(dimension_candidates)
 
-        name = str(col).lower()
-
-        if any(
-            word in name
-            for word in [
-                "department",
-                "gender",
-                "jobrole",
-                "job role",
-                "category",
-                "region",
-                "city",
-                "state",
-                "segment",
-                "business travel",
-                "overtime",
-                "marital",
-                "education"
-            ]
-        ):
-
-            if any(
-                term in q
-                for term in [
-                    str(col).lower(),
-                    name.replace("_", " ")
-                ]
-            ):
-
-                dimension = col
-                break
-
-    if (
-        dimension is None
-        and target_dimension
-    ):
-
-        dimension = _find_column_ci(
-            df,
-            [target_dimension]
-        )
-
-    asks_highest = any(
-        x in q
-        for x in [
-            "highest",
-            "maximum",
-            "max",
-            "most"
+    if dimension is None:
+        dimension_aliases = [
+            "department", "job role", "jobrole", "business travel", "overtime", "gender",
+            "marital status", "education", "education field", "job level", "job satisfaction",
+            "work life balance", "worklifebalance", "environment satisfaction", "relationship satisfaction",
+            "performance rating", "region", "city", "state", "country", "category", "product",
+            "customer", "segment", "channel", "campaign", "branch", "contract", "payment method", "service"
         ]
-    )
+        dimension = find_column(all_columns, dimension_aliases)
+        if dimension == target_col:
+            dimension = None
 
-    asks_lowest = any(
-        x in q
-        for x in [
-            "lowest",
-            "minimum",
-            "min",
-            "least"
-        ]
-    )
+    # If the question says "department", "job role", etc., do not let a
+    # numeric metric be mistaken for the requested dimension.
+    if dimension is None and target_dimension in all_columns and target_dimension != target_col:
+        dimension = target_dimension
 
-    target_rate_words = any(
-        x in q
-        for x in [
-            "attrition",
-            "churn",
-            "default",
-            "fraud",
-            "conversion",
-            "converted",
-            "response",
-            "purchase",
-            "purchased",
-            "return",
-            "defect",
-            "late",
-            "stockout"
-        ]
-    )
+    metric = mentioned_column(numeric_columns)
+    if metric is None:
+        metric = find_column(numeric_columns, [
+            "Sales", "Revenue", "Profit", "Amount", "Income", "Monthly Income", "Salary",
+            "Hourly Rate", "Daily Rate", "Monthly Rate", "Price", "Quantity", "Demand",
+            "Cost", "Spend", "Years At Company", "YearsAtCompany", "Age", "Job Level",
+            "Performance Rating", "Job Satisfaction", "Work Life Balance"
+        ])
 
-    if (
-        target_col is not None
-        and dimension is not None
-        and (
-            asks_highest
-            or asks_lowest
-            or target_rate_words
-        )
-    ):
+    asks_highest = any(x in normalized_q for x in ["highest", "maximum", "max", "most", "largest", "greatest", "top"])
+    asks_lowest = any(x in normalized_q for x in ["lowest", "minimum", "min", "least", "smallest"])
+    asks_average = any(x in normalized_q for x in ["average", "mean", "avg"])
+    asks_total = any(x in normalized_q for x in ["total", "sum"])
+    asks_count = any(x in normalized_q for x in [
+        "how many", "number of", "count", "most employees", "most records",
+        "highest number of records", "least records", "most common"
+    ])
+    asks_rate = any(x in normalized_q for x in ["rate", "percentage", "percent", "%", "ratio", "proportion"])
 
-        temp = df[
-            [
-                dimension,
-                target_col
-            ]
-        ].copy()
+    # ======================================================
+    # 1. TARGET / OUTCOME QUESTIONS FIRST
+    # ======================================================
+    if target_col is not None:
+        valid_target = df[target_col].dropna()
 
-        temp = temp.dropna(
-            subset=[dimension]
-        )
-
-        if not temp.empty:
-
-            temp["__positive"] = (
-                _binary_positive_mask(
-                    temp[target_col]
-                )
-            )
-
-            grouped = (
-                temp.groupby(
-                    dimension,
-                    dropna=False
-                )
-                .agg(
-                    Records=(
-                        "__positive",
-                        "size"
-                    ),
-                    Positive=(
-                        "__positive",
-                        "sum"
-                    )
-                )
-            )
-
-            grouped["Rate"] = (
-                grouped["Positive"]
-                / grouped["Records"]
-                * 100
-            )
-
-            min_records = (
-                1
-                if len(grouped) <= 10
-                else 5
-            )
-
-            eligible = grouped[
-                grouped["Records"]
-                >= min_records
-            ].copy()
-
-            if not eligible.empty:
-
-                if (
-                    asks_highest
-                    or not asks_lowest
-                ):
-
-                    row = (
-                        eligible
-                        .sort_values(
-                            "Rate",
-                            ascending=False
-                        )
-                        .iloc[0]
-                    )
-
-                else:
-
-                    row = (
-                        eligible
-                        .sort_values(
-                            "Rate",
-                            ascending=True
-                        )
-                        .iloc[0]
-                    )
-
-                label = row.name
-
-                return {
-                    "mode":
-                        "analysis",
-
-                    "title":
-                        (
-                            f"Highest observed "
-                            f"{target_col} rate by "
-                            f"{dimension}"
-                        ),
-
-                    "answer":
-                        (
-                            f"{label} has the highest "
-                            f"observed "
-                            f"{target_col.lower()} "
-                            f"rate: "
-                            f"{row['Rate']:.1f}%."
-                        ),
-
-                    "evidence":
-                        (
-                            f"{int(row['Positive']):,} "
-                            f"of "
-                            f"{int(row['Records']):,} "
-                            f"records in {label} "
-                            f"are marked as the positive "
-                            f"{target_col.lower()} outcome."
-                        ),
-
-                    "table":
-                        (
-                            eligible
-                            .sort_values(
-                                "Rate",
-                                ascending=False
-                            )
-                            .reset_index()
-                            .rename(
-                                columns={
-                                    dimension: dimension,
-                                    "Rate":
-                                        f"{target_col} Rate (%)"
-                                }
-                            )[
-                                [
-                                    dimension,
-                                    "Records",
-                                    "Positive",
-                                    f"{target_col} Rate (%)"
-                                ]
-                            ]
-                        ),
-
-                    "note":
-                        (
-                            "This is an observed "
-                            "group-level rate in the "
-                            "uploaded data. It does not "
-                            "establish that the group "
-                            "causes the outcome."
-                        )
-                }
-
-    if dimension is not None:
-
-        metric = None
-
-        for col in df.select_dtypes(
-            include="number"
-        ).columns:
-
-            if (
-                str(col).lower() in q
-                or
-                str(col)
-                .lower()
-                .replace("_", " ")
-                in q
-            ):
-
-                metric = col
-                break
-
-        if metric is None:
-
-            metric = _find_column_ci(
-                df,
-                [
-                    "Sales",
-                    "Revenue",
-                    "Profit",
-                    "Amount",
-                    "Income",
-                    "Salary",
-                    "Price",
-                    "Quantity",
-                    "Demand",
-                    "Cost",
-                    "Spend"
-                ]
-            )
-
-        if (
-            metric is not None
-            and any(
-                x in q
-                for x in [
-                    "average",
-                    "mean",
-                    "avg",
-                    "total",
-                    "sum"
-                ]
-            )
-        ):
-
-            agg = (
-                df.groupby(
-                    dimension,
-                    dropna=False
-                )[metric]
-                .agg(
-                    [
-                        "count",
-                        "mean",
-                        "sum"
-                    ]
-                )
-                .reset_index()
-            )
-
-            agg = agg.sort_values(
-                "mean",
-                ascending=False
-            )
-
+        if asks_rate and len(valid_target) > 0:
+            positive = int(positive_mask(valid_target).sum())
+            rate = positive / len(valid_target) * 100
             return {
-                "mode":
-                    "analysis",
-
-                "title":
-                    f"{metric} by {dimension}",
-
-                "answer":
-                    (
-                        f"The highest average "
-                        f"{metric} is for "
-                        f"{agg.iloc[0][dimension]}: "
-                        f"{agg.iloc[0]['mean']:,.2f}."
-                    ),
-
-                "evidence":
-                    (
-                        f"The calculation uses "
-                        f"{int(agg.iloc[0]['count']):,} "
-                        f"non-missing {metric} records "
-                        f"in that group."
-                    ),
-
-                "table":
-                    agg.rename(
-                        columns={
-                            "mean":
-                                f"Average {metric}",
-                            "sum":
-                                f"Total {metric}",
-                            "count":
-                                "Records"
-                        }
-                    ),
-
-                "note":
-                    (
-                        "Values are calculated directly "
-                        "from the uploaded dataset."
-                    )
+                "mode": "analysis",
+                "title": f"Overall {target_col} Rate",
+                "answer": f"The overall {target_col.lower()} rate is {rate:.1f}%.",
+                "evidence": f"{positive:,} of {len(valid_target):,} non-missing {target_col} records represent the positive outcome.",
+                "table": pd.DataFrame({
+                    "Metric": [f"{target_col} Rate"],
+                    "Positive Records": [positive],
+                    "Records": [len(valid_target)],
+                    "Rate (%)": [rate]
+                }),
+                "note": "Calculated directly from the uploaded dataset."
             }
 
+        if dimension is not None:
+            temp = df[[dimension, target_col]].copy()
+            temp[dimension] = temp[dimension].fillna("Missing").astype(str).str.strip()
+            temp["_Positive"] = positive_mask(temp[target_col]).astype(int)
+            temp["_ValidTarget"] = temp[target_col].notna().astype(int)
+
+            grouped = temp.groupby(dimension, dropna=False).agg(
+                Records=("_ValidTarget", "sum"),
+                Positive=("_Positive", "sum")
+            ).reset_index()
+            grouped = grouped[grouped["Records"] > 0].copy()
+            grouped["Rate (%)"] = grouped["Positive"] / grouped["Records"] * 100
+
+            if not grouped.empty and (asks_highest or asks_lowest or asks_rate or target_col.lower() in normalized_q):
+                ascending = asks_lowest and not asks_highest
+                result_table = grouped.sort_values("Rate (%)", ascending=ascending).reset_index(drop=True)
+                selected = result_table.iloc[0]
+                direction = "lowest" if ascending else "highest"
+                label = selected[dimension]
+                return {
+                    "mode": "analysis",
+                    "title": f"{target_col} Rate by {dimension}",
+                    "answer": (
+                        f"'{label}' has the {direction} observed {target_col.lower()} rate "
+                        f"among {dimension} groups: {selected['Rate (%)']:.1f}%."
+                    ),
+                    "evidence": (
+                        f"{int(selected['Positive']):,} of {int(selected['Records']):,} records in "
+                        f"'{label}' are marked as the positive {target_col.lower()} outcome."
+                    ),
+                    "table": result_table.head(20),
+                    "note": "This is an observed group-level rate calculated from the uploaded data; it does not establish causation."
+                }
+
+    # ======================================================
+    # 2. CATEGORY / GROUP RECORD COUNTS
+    # ======================================================
+    if dimension is not None and asks_count:
+        values = df[dimension].fillna("Missing").astype(str).str.strip()
+        counts = values.value_counts(dropna=False).rename("Records").reset_index()
+        counts.columns = [str(dimension), "Records"]
+        ascending = asks_lowest and not asks_highest
+        table = counts.sort_values("Records", ascending=ascending).reset_index(drop=True)
+        row = table.iloc[0]
+        direction = "lowest" if ascending else "highest"
+        return {
+            "mode": "analysis",
+            "title": f"{direction.title()} Record Count — {dimension}",
+            "answer": f"'{row[str(dimension)]}' has the {direction} number of records in {dimension}: {int(row['Records']):,}.",
+            "evidence": f"Records were grouped by {dimension} and counted directly from the uploaded data.",
+            "table": table.head(20),
+            "note": "This is a descriptive record-count comparison."
+        }
+
+    # ======================================================
+    # 3. CATEGORY + NUMERIC METRIC
+    # ======================================================
+    if dimension is not None and metric is not None:
+        work = df[[dimension, metric]].copy()
+        work[metric] = pd.to_numeric(work[metric], errors="coerce")
+        work = work.dropna(subset=[metric])
+
+        if not work.empty:
+            grouped = work.groupby(dimension, dropna=False)[metric].agg(
+                Records="count", Average="mean", Total="sum"
+            ).reset_index()
+
+            if asks_highest and asks_average:
+                table = grouped.sort_values("Average", ascending=False).reset_index(drop=True)
+                row = table.iloc[0]
+                return {
+                    "mode": "analysis",
+                    "title": f"Highest Average {metric} by {dimension}",
+                    "answer": f"'{row[dimension]}' has the highest average {metric}: {row['Average']:,.2f}.",
+                    "evidence": f"The average {metric} was calculated for every {dimension} group.",
+                    "table": table.head(20),
+                    "note": "Observed group-level averages calculated directly from the uploaded data."
+                }
+
+            if asks_lowest and asks_average:
+                table = grouped.sort_values("Average", ascending=True).reset_index(drop=True)
+                row = table.iloc[0]
+                return {
+                    "mode": "analysis",
+                    "title": f"Lowest Average {metric} by {dimension}",
+                    "answer": f"'{row[dimension]}' has the lowest average {metric}: {row['Average']:,.2f}.",
+                    "evidence": f"The average {metric} was calculated for every {dimension} group.",
+                    "table": table.head(20),
+                    "note": "Observed group-level averages calculated directly from the uploaded data."
+                }
+
+            if asks_highest and asks_total:
+                table = grouped.sort_values("Total", ascending=False).reset_index(drop=True)
+                row = table.iloc[0]
+                return {
+                    "mode": "analysis",
+                    "title": f"Highest Total {metric} by {dimension}",
+                    "answer": f"'{row[dimension]}' has the highest total {metric}: {row['Total']:,.2f}.",
+                    "evidence": f"Total {metric} was calculated for every {dimension} group.",
+                    "table": table.head(20),
+                    "note": "Calculated directly from the uploaded data."
+                }
+
+            if asks_lowest and asks_total:
+                table = grouped.sort_values("Total", ascending=True).reset_index(drop=True)
+                row = table.iloc[0]
+                return {
+                    "mode": "analysis",
+                    "title": f"Lowest Total {metric} by {dimension}",
+                    "answer": f"'{row[dimension]}' has the lowest total {metric}: {row['Total']:,.2f}.",
+                    "evidence": f"Total {metric} was calculated for every {dimension} group.",
+                    "table": table.head(20),
+                    "note": "Calculated directly from the uploaded data."
+                }
+
+            if asks_average:
+                table = grouped.sort_values("Average", ascending=False).reset_index(drop=True)
+                return {
+                    "mode": "analysis",
+                    "title": f"Average {metric} by {dimension}",
+                    "answer": f"The overall average {metric} is {work[metric].mean():,.2f}. The table shows how it varies across {dimension}.",
+                    "evidence": f"{len(work):,} non-missing {metric} values were used.",
+                    "table": table.head(20),
+                    "note": "Calculated directly from the uploaded dataframe."
+                }
+
+            if asks_total:
+                table = grouped.sort_values("Total", ascending=False).reset_index(drop=True)
+                return {
+                    "mode": "analysis",
+                    "title": f"Total {metric} by {dimension}",
+                    "answer": f"The total {metric} is {work[metric].sum():,.2f}. The table shows the contribution of each {dimension} group.",
+                    "evidence": f"{len(work):,} non-missing {metric} values were included.",
+                    "table": table.head(20),
+                    "note": "Calculated directly from the uploaded dataframe."
+                }
+
+    # ======================================================
+    # 4. OVERALL NUMERIC QUESTIONS
+    # ======================================================
+    if metric is not None:
+        values = pd.to_numeric(df[metric], errors="coerce").dropna()
+        if len(values) > 0:
+            if asks_average:
+                value = float(values.mean())
+                return {
+                    "mode": "analysis",
+                    "title": f"Average {metric}",
+                    "answer": f"The average {metric} is {value:,.2f}.",
+                    "evidence": f"Calculated using {len(values):,} non-missing {metric} values.",
+                    "table": pd.DataFrame({"Metric": [metric], "Average": [value], "Records Used": [len(values)]}),
+                    "note": "Calculated directly from the uploaded dataframe."
+                }
+            if asks_highest:
+                value = float(values.max())
+                return {
+                    "mode": "analysis",
+                    "title": f"Highest {metric}",
+                    "answer": f"The highest {metric} is {value:,.2f}.",
+                    "evidence": f"Calculated from {len(values):,} non-missing values.",
+                    "table": pd.DataFrame({"Metric": [metric], "Highest Value": [value]}),
+                    "note": "Calculated directly from the uploaded dataframe."
+                }
+            if asks_lowest:
+                value = float(values.min())
+                return {
+                    "mode": "analysis",
+                    "title": f"Lowest {metric}",
+                    "answer": f"The lowest {metric} is {value:,.2f}.",
+                    "evidence": f"Calculated from {len(values):,} non-missing values.",
+                    "table": pd.DataFrame({"Metric": [metric], "Lowest Value": [value]}),
+                    "note": "Calculated directly from the uploaded dataframe."
+                }
+
+    # ======================================================
+    # 5. BASIC DATASET QUESTIONS
+    # ======================================================
+    if any(x in normalized_q for x in ["how many records", "number of records", "how many rows", "number of rows", "record count"]):
+        return {
+            "mode": "analysis",
+            "title": "Dataset Records",
+            "answer": f"The dataset contains {len(df):,} records.",
+            "evidence": f"The uploaded dataframe contains {len(df):,} rows.",
+            "table": None,
+            "note": "Calculated directly from the uploaded data."
+        }
+
+    if any(x in normalized_q for x in ["how many columns", "number of columns", "columns available", "number of fields"]):
+        return {
+            "mode": "analysis",
+            "title": "Dataset Columns",
+            "answer": f"The dataset contains {len(df.columns):,} columns.",
+            "evidence": "Available columns: " + ", ".join(map(str, df.columns)),
+            "table": pd.DataFrame({"Column": list(df.columns), "Data Type": [str(x) for x in df.dtypes]}),
+            "note": "Column count and types are calculated from the uploaded data."
+        }
+
+    if any(x in normalized_q for x in ["missing", "null values", "nulls", "incomplete data"]):
+        missing = df.isna().sum().sort_values(ascending=False)
+        missing = missing[missing > 0]
+        if missing.empty:
+            return {
+                "mode": "analysis", "title": "Missing Values",
+                "answer": "No missing values were detected.",
+                "evidence": f"All {len(df.columns):,} columns contain complete values.",
+                "table": None, "note": "Calculated from the uploaded dataframe."
+            }
+        table = missing.rename("Missing Values").reset_index()
+        table.columns = ["Column", "Missing Values"]
+        return {
+            "mode": "analysis", "title": "Missing Values",
+            "answer": f"{int(missing.sum()):,} missing cells were found across {len(missing):,} columns.",
+            "evidence": "The table identifies columns containing missing values.",
+            "table": table, "note": "Calculated directly from the uploaded data."
+        }
+
+    if "duplicate" in normalized_q:
+        duplicate_count = int(df.duplicated().sum())
+        return {
+            "mode": "analysis", "title": "Duplicate Records",
+            "answer": "No exact duplicate rows were detected." if duplicate_count == 0 else f"{duplicate_count:,} exact duplicate rows were detected.",
+            "evidence": f"The dataframe contains {duplicate_count:,} exact duplicate rows.",
+            "table": None, "note": "This checks complete-row duplicates."
+        }
+
+    # ------------------------------------------------------
+    # Fallback: expose real available dimensions and metrics.
+    # ------------------------------------------------------
+    available_dimensions = [str(c) for c in categorical_columns[:12]]
+    available_metrics = [str(c) for c in numeric_columns[:12]]
     return {
-        "mode":
-            "analysis",
-
-        "title":
-            "Data-driven analysis",
-
-        "answer":
-            (
-                "I could not map that request to a "
-                "reliable calculation from the "
-                "available columns."
-            ),
-
-        "evidence":
-            (
-                f"Available columns: "
-                f"{', '.join(map(str, df.columns))}."
-            ),
-
-        "table":
-            None,
-
-        "note":
-            (
-                "Try naming the metric and dimension "
-                "explicitly, for example: "
-                "'Which department has the highest attrition?'"
-            )
+        "mode": "analysis",
+        "title": "Question Needs Clarification",
+        "answer": "I could not identify a reliable calculation for that question from the uploaded data.",
+        "evidence": (
+            "Available business dimensions: " + (", ".join(available_dimensions) if available_dimensions else "None") +
+            ". Available numeric metrics: " + (", ".join(available_metrics) if available_metrics else "None") + "."
+        ),
+        "table": None,
+        "note": (
+            "Try a question such as: 'Which department has the highest attrition?', "
+            "'Which job role has the highest average monthly income?', "
+            "'What is the average monthly income by department?', or "
+            "'Which department has the most employees?'"
+        )
     }
 
 
 def _render_real_user_analysis(st, df):
 
-    st.markdown(
-        "## 🎯 User Analysis / Prediction Request"
-    )
-
+    st.markdown("## 🎯 User Analysis / Prediction Request")
     st.write(
         "Ask a question about the uploaded dataset. "
         "The answer below is calculated from the current data."
     )
 
+    if "real_user_request" not in st.session_state:
+        st.session_state["real_user_request"] = ""
+
+    if "real_user_result" not in st.session_state:
+        st.session_state["real_user_result"] = None
+
+    # ======================================================
+    # DATASET-SPECIFIC DEFAULT QUESTIONS
+    # ======================================================
+    suggested_questions = generate_data_questions(df)
+
+    st.markdown("### 💡 Suggested Questions")
+    st.caption(
+        "Choose a question below, or type your own question. "
+        "The questions are generated from this dataset."
+    )
+
+    def choose_question(question):
+        st.session_state["real_user_request"] = question
+        try:
+            st.session_state["real_user_result"] = _answer_user_request(df, question, None)
+        except Exception as exc:
+            st.session_state["real_user_result"] = {
+                "mode": "analysis",
+                "title": "Question processing error",
+                "answer": "I could not calculate the answer for this question.",
+                "evidence": str(exc),
+                "table": None,
+                "note": "Please try the question again or type it manually."
+            }
+
+    for i in range(0, len(suggested_questions), 2):
+        cols = st.columns(2)
+        for j, col in enumerate(cols):
+            idx = i + j
+            if idx >= len(suggested_questions):
+                continue
+            with col:
+                st.button(
+                    suggested_questions[idx],
+                    key=f"suggested_question_{idx}",
+                    use_container_width=True,
+                    on_click=choose_question,
+                    args=(suggested_questions[idx],)
+                )
+
+    # ======================================================
+    # USER QUESTION
+    # ======================================================
+    st.markdown("### ✍️ Ask Your Own Question")
+
     request = st.text_input(
         "What would you like to analyse or predict?",
         key="real_user_request",
-        placeholder=(
-            "e.g. Which department has highest attrition?"
-        )
+        placeholder="e.g. Which department has highest attrition?"
     )
 
-    target_options = (
-        ["Auto-detect"]
-        + [str(c) for c in df.columns]
-    )
+    target_options = ["Auto-detect"] + [str(c) for c in df.columns]
 
     selected_target = st.selectbox(
         "🎯 Target / Dimension (Optional)",
@@ -2980,331 +4797,98 @@ def _render_real_user_analysis(st, df):
         key="real_user_target"
     )
 
-    target = (
-        None
-        if selected_target == "Auto-detect"
-        else selected_target
-    )
+    target = None if selected_target == "Auto-detect" else selected_target
 
     if st.button(
         "🔎 Analyse My Request",
         type="primary",
         use_container_width=True
     ):
+        if not request.strip():
+            st.warning("Please select a suggested question or type your own question.")
+        else:
+            try:
+                st.session_state["real_user_result"] = _answer_user_request(df, request, target)
+            except Exception as exc:
+                st.session_state["real_user_result"] = {
+                    "mode": "analysis",
+                    "title": "Question processing error",
+                    "answer": "I could not calculate the answer for this question.",
+                    "evidence": str(exc),
+                    "table": None,
+                    "note": "Please check the question and column name, then try again."
+                }
 
-        result = _answer_user_request(
-            df,
-            request,
-            target
-        )
-
-        st.session_state[
-            "real_user_result"
-        ] = result
-
-    result = st.session_state.get(
-        "real_user_result"
-    )
+    result = st.session_state.get("real_user_result")
 
     if result:
-
         st.markdown("---")
-
-        st.markdown(
-            "## 🎯 User-Requested Analysis"
-        )
-
-        st.write(
-            f"**Your request:** {request}"
-        )
-
-        st.write(
-            f"**Detected Mode:** 📊 "
-            f"{result['mode'].title()}"
-        )
+        st.markdown("## 🎯 User-Requested Analysis")
+        st.write(f"**Your request:** {request}")
+        st.write(f"**Detected Mode:** 📊 {result['mode'].title()}")
 
         if target:
+            st.write(f"**Target / Dimension:** `{target}`")
 
-            st.write(
-                f"**Target / Dimension:** `{target}`"
-            )
+        st.markdown("### ✅ Exact Answer")
+        st.success(result["answer"])
 
-        st.markdown(
-            "### ✅ Exact Answer"
-        )
+        st.markdown("### 📊 Evidence from Your Data")
+        st.info(result["evidence"])
 
-        st.success(
-            result["answer"]
-        )
-
-        st.markdown(
-            "### 📊 Evidence from Your Data"
-        )
-
-        st.info(
-            result["evidence"]
-        )
-
-        if result.get(
-            "table"
-        ) is not None:
-
+        if result.get("table") is not None:
             st.dataframe(
                 result["table"],
                 use_container_width=True,
                 hide_index=True
             )
 
-        st.caption(
-            result["note"]
-        )
+        st.caption(result["note"])
 
-    # ------------------------------------------------------
-    # COMMON DATASET PROBLEMS — calculated fresh from df
-    # ------------------------------------------------------
-
-    st.markdown(
-        "## 📊 Common Dataset Problems"
-    )
-
+    # ======================================================
+    # COMMON DATASET PROBLEMS — calculated from df
+    # ======================================================
+    st.markdown("## 📊 Common Dataset Problems")
     st.caption(
-        "These statuses are calculated from the uploaded dataset. "
-        "Nothing is hard-coded."
+        "These statuses are calculated from the uploaded dataset. Nothing is hard-coded."
     )
 
     cards = []
 
-    missing_cells = int(
-        df.isna()
-        .sum()
-        .sum()
-    )
-
-    missing_cols = int(
-        (
-            df.isna()
-            .sum()
-            > 0
-        ).sum()
-    )
+    missing_cells = int(df.isna().sum().sum())
+    missing_cols = int((df.isna().sum() > 0).sum())
 
     if missing_cells == 0:
-
-        cards.append(
-            (
-                "🟢",
-                "No Problem Detected — Missing / Incomplete Data",
-                (
-                    f"0 missing cells across "
-                    f"{len(df.columns)} columns."
-                )
-            )
-        )
-
+        cards.append((
+            "🟢",
+            "No Problem Detected — Missing / Incomplete Data",
+            f"0 missing cells across {len(df.columns)} columns."
+        ))
     else:
+        cards.append((
+            "🔴",
+            "Problem Detected — Missing / Incomplete Data",
+            f"{missing_cells:,} missing cells across {missing_cols:,} columns."
+        ))
 
-        cards.append(
-            (
-                "🔴",
-                "Problem Detected — Missing / Incomplete Data",
-                (
-                    f"{missing_cells:,} missing cells "
-                    f"across {missing_cols:,} columns."
-                )
-            )
-        )
-
-    duplicates = int(
-        df.duplicated().sum()
-    )
+    duplicates = int(df.duplicated().sum())
 
     if duplicates == 0:
-
-        cards.append(
-            (
-                "🟢",
-                "No Problem Detected — Duplicate Records",
-                "0 exact duplicate rows detected."
-            )
-        )
-
+        cards.append((
+            "🟢",
+            "No Problem Detected — Duplicate Records",
+            "0 exact duplicate rows detected."
+        ))
     else:
+        cards.append((
+            "🔴",
+            "Problem Detected — Duplicate Records",
+            f"{duplicates:,} exact duplicate rows detected."
+        ))
 
-        cards.append(
-            (
-                "🔴",
-                "Problem Detected — Duplicate Records",
-                (
-                    f"{duplicates:,} exact duplicate "
-                    f"rows detected."
-                )
-            )
-        )
-
-    target_col = _find_column_ci(
-        df,
-        [
-            "Attrition",
-            "Churn",
-            "Default",
-            "Fraud",
-            "Converted",
-            "Response",
-            "Purchased",
-            "Returned",
-            "Defect",
-            "Late",
-            "Stockout",
-            "Outcome",
-            "Target",
-            "Status"
-        ]
-    )
-
-    if target_col:
-
-        positive = _binary_positive_mask(
-            df[target_col]
-        )
-
-        rate = (
-            float(
-                positive.mean()
-                * 100
-            )
-            if len(df)
-            else 0.0
-        )
-
-        label = target_col
-
-        if positive.any():
-
-            cards.append(
-                (
-                    "🔴",
-                    (
-                        f"Problem Detected — "
-                        f"{label}"
-                    ),
-                    (
-                        f"{int(positive.sum()):,} "
-                        f"of {len(df):,} records have "
-                        f"a positive {label.lower()} "
-                        f"outcome ({rate:.1f}%)."
-                    )
-                )
-            )
-
-        else:
-
-            cards.append(
-                (
-                    "🟢",
-                    (
-                        f"No Problem Detected — "
-                        f"{label}"
-                    ),
-                    (
-                        f"No recognized positive "
-                        f"{label.lower()} outcome was "
-                        f"found in the uploaded values."
-                    )
-                )
-            )
-
-        for factor in [
-            "OverTime",
-            "JobSatisfaction",
-            "WorkLifeBalance"
-        ]:
-
-            factor_col = _find_column_ci(
-                df,
-                [factor]
-            )
-
-            if factor_col:
-
-                temp = pd.DataFrame(
-                    {
-                        "factor":
-                            df[factor_col],
-                        "positive":
-                            positive
-                    }
-                ).dropna(
-                    subset=["factor"]
-                )
-
-                if temp["factor"].nunique() > 1:
-
-                    rates = (
-                        temp
-                        .groupby("factor")[
-                            "positive"
-                        ]
-                        .mean()
-                        * 100
-                    )
-
-                    spread = float(
-                        rates.max()
-                        - rates.min()
-                    )
-
-                    high_group = rates.idxmax()
-
-                    if spread >= 5:
-
-                        cards.append(
-                            (
-                                "🔴",
-                                (
-                                    f"Problem Detected — "
-                                    f"{factor_col} / {label}"
-                                ),
-                                (
-                                    f"Observed {label.lower()} "
-                                    f"rates range from "
-                                    f"{rates.min():.1f}% to "
-                                    f"{rates.max():.1f}% across "
-                                    f"{factor_col} groups; "
-                                    f"highest is {high_group} "
-                                    f"at {rates.max():.1f}%."
-                                )
-                            )
-                        )
-
-                    else:
-
-                        cards.append(
-                            (
-                                "🟢",
-                                (
-                                    f"No Strong Difference "
-                                    f"Detected — "
-                                    f"{factor_col} / {label}"
-                                ),
-                                (
-                                    f"Observed group rates "
-                                    f"differ by "
-                                    f"{spread:.1f} "
-                                    f"percentage points."
-                                )
-                            )
-                        )
-
-    for icon, title, evidence in cards:
-
-        st.markdown(
-            f"### {icon} {title}"
-        )
-
-        st.write(
-            evidence
-        )
-
+    for icon, title, description in cards:
+        st.markdown(f"### {icon} {title}")
+        st.write(description)
 
 # ==========================================================
 # ASK DATA
@@ -3340,58 +4924,6 @@ with tabs[6]:
         st.info(
             "Upload a dataset first to use the AI Data Analyst."
         )
-
-
-# ==========================================================
-# STANDALONE DASHBOARD SERVER
-# ==========================================================
-
-def _dashboard_port_is_open(host="127.0.0.1", port=8502):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.25)
-    try:
-        return sock.connect_ex((host, port)) == 0
-    finally:
-        sock.close()
-
-
-def _save_dashboard_snapshot(df, sheets):
-    reports_dir = Path("reports")
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_path = reports_dir / "dashboard_snapshot.pkl"
-
-    with open(snapshot_path, "wb") as snapshot_file:
-        pickle.dump({"df": df, "sheets": sheets}, snapshot_file, protocol=pickle.HIGHEST_PROTOCOL)
-
-    return snapshot_path
-
-
-def _start_standalone_dashboard():
-    dashboard_file = Path(__file__).resolve().parent / "dashboard_app.py"
-
-    if not dashboard_file.exists():
-        raise FileNotFoundError(f"Dashboard app not found: {dashboard_file}")
-
-    if not _dashboard_port_is_open(port=8502):
-        subprocess.Popen(
-            [
-                sys.executable, "-m", "streamlit", "run", str(dashboard_file),
-                "--server.port", "8502", "--server.headless", "true",
-            ],
-            cwd=str(dashboard_file.parent),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
-        )
-
-        # Give the separate server a few seconds to start before
-        # putting its URL into the PDF.
-        for _ in range(20):
-            if _dashboard_port_is_open(port=8502):
-                break
-            time.sleep(0.25)
-
-    return "http://localhost:8502"
 
 
 # ==========================================================
@@ -3442,6 +4974,8 @@ with tabs[7]:
         ✅ Development Opportunities
 
         ✅ User-requested AI Analysis
+
+        ✅ Interactive Streamlit Dashboard
         """
     )
 
@@ -3479,15 +5013,97 @@ with tabs[7]:
 
         try:
 
-            # Save the current dashboard and start a separate
-            # dashboard-only Streamlit server on port 8502.
-            # The existing main Streamlit app on port 8501 is unchanged.
+            # ==================================================
+            # 1. SAVE CURRENT DASHBOARD STATE
+            # ==================================================
+
             _save_dashboard_snapshot(
                 df,
                 st.session_state.sheets
             )
 
-            dashboard_url = _start_standalone_dashboard()
+            # ==================================================
+            # 2. LINK TO THE DEDICATED DASHBOARD PAGE
+            # ==================================================
+
+            # This is a page inside THIS Streamlit application.
+            # It does not start dashboard_app.py and does not use
+            # port 8502.
+            dashboard_url = "http://localhost:8501/?page=dashboard"
+
+            # ==================================================
+            # 3. BUILD THE COMPLETE ASK DATA QUESTION SET
+            # ==================================================
+            # Ask Data displays the questions generated from the current
+            # dataset.  The PDF must contain that SAME complete list, and
+            # every question that can be calculated should carry its
+            # calculated answer into the report.
+            pdf_questions = []
+            seen_pdf_questions = set()
+
+            for question in generate_data_questions(df):
+                question_text = re.sub(
+                    r"\s+",
+                    " ",
+                    str(question)
+                ).strip()
+
+                if not question_text:
+                    continue
+
+                question_key = question_text.lower()
+                if question_key in seen_pdf_questions:
+                    continue
+                seen_pdf_questions.add(question_key)
+
+                try:
+                    answer_result = _answer_user_request(
+                        df,
+                        question_text,
+                        None
+                    )
+                except Exception as question_error:
+                    answer_result = {
+                        "mode": "analysis",
+                        "title": "Answer could not be calculated",
+                        "answer": "The question could not be reliably calculated from the uploaded data.",
+                        "evidence": str(question_error),
+                        "table": None,
+                        "note": "The question is retained in the PDF because it is part of the Ask Data question set."
+                    }
+
+                pdf_questions.append({
+                    "question": question_text,
+                    "answer": (
+                        answer_result.get("answer", "")
+                        if isinstance(answer_result, dict)
+                        else str(answer_result or "")
+                    ),
+                    "evidence": (
+                        answer_result.get("evidence", "")
+                        if isinstance(answer_result, dict)
+                        else ""
+                    ),
+                    "note": (
+                        answer_result.get("note", "")
+                        if isinstance(answer_result, dict)
+                        else ""
+                    ),
+                    "answerable": bool(
+                        isinstance(answer_result, dict)
+                        and answer_result.get("answer")
+                        and "could not identify a reliable calculation"
+                        not in str(answer_result.get("answer", "")).lower()
+                    ),
+                })
+
+            # Keep the same complete question/answer set available to the
+            # report generator without changing the Ask Data page layout.
+            st.session_state.pdf_questions = pdf_questions
+
+            # ==================================================
+            # 4. GENERATE PDF WITH AUTOMATIC DASHBOARD URL
+            # ==================================================
 
             generate_pdf(
 
@@ -3503,18 +5119,31 @@ with tabs[7]:
 
                 st.session_state.recommendations,
 
-                st.session_state.questions,
+                pdf_questions,
 
-                st.session_state.get("research_result"),
+                st.session_state.get(
+                    "research_result"
+                ),
 
-                st.session_state.get("research_sources", []),
+                st.session_state.get(
+                    "research_sources",
+                    []
+                ),
 
-                st.session_state.get("basic_data_explanation"),
+                st.session_state.get(
+                    "basic_data_explanation"
+                ),
 
-                st.session_state.get("real_user_result"),
+                st.session_state.get(
+                    "real_user_result"
+                ),
 
                 dashboard_url
             )
+
+            # ==================================================
+            # 4. DOWNLOAD PDF
+            # ==================================================
 
             with open(
                 pdf_path,
@@ -3527,14 +5156,34 @@ with tabs[7]:
 
                     data=file,
 
-                    file_name=
-                        "automated_bi_report.pdf",
+                    file_name=(
+                        "automated_bi_report.pdf"
+                    ),
 
                     mime="application/pdf"
                 )
 
             st.success(
-                "Final report generated successfully."
+                "Final report generated successfully. "
+                "The dashboard URL was detected automatically."
+            )
+
+            # ==================================================
+            # 5. SHOW AUTOMATIC DASHBOARD LINK
+            # ==================================================
+
+            st.markdown(
+                "### 📊 Interactive Dashboard"
+            )
+
+            st.markdown(
+                f"[🔗 OPEN INTERACTIVE DASHBOARD PAGE]({dashboard_url})"
+            )
+
+            st.caption(
+                "This opens the dedicated dashboard page inside the "
+                "same Streamlit application. The same page link is "
+                "embedded as a clickable link inside the generated PDF."
             )
 
         except Exception as e:
@@ -3550,8 +5199,22 @@ with tabs[7]:
 
 st.divider()
 
-st.caption(
-    "Automated Business Intelligence Platform | "
-    "Data → Dashboard → Statistics → Insights → "
-    "Recommendations → AI Analysis → Report"
+st.markdown(
+    """
+    <div style="
+        text-align:center;
+        padding:16px 8px;
+        color:#617A9F;
+        font-size:11px;
+        letter-spacing:.04em;
+    ">
+        <span style="color:#22D3EE;">◆</span>
+        DATA ANALYZER
+        <span style="color:#8B5CF6;">•</span>
+        Automated Business Intelligence
+        <span style="color:#EC4899;">•</span>
+        Data → Dashboard → Insights → Decisions
+    </div>
+    """,
+    unsafe_allow_html=True
 )
