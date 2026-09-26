@@ -1,6 +1,7 @@
 import math
 import os
 import re
+import shutil
 from pathlib import Path
 from html import escape
 
@@ -267,6 +268,16 @@ def _style_neon_figure(fig, chart=None):
     except Exception:
         pass
     return fig
+
+
+def _footer(canvas, doc):
+    """Draw the report footer on every PDF page."""
+    canvas.saveState()
+    canvas.setFont("Helvetica", 7)
+    canvas.setFillColor(colors.HexColor("#64748B"))
+    canvas.drawString(18 * mm, 10 * mm, "Automated Business Intelligence Report")
+    canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"Page {doc.page}")
+    canvas.restoreState()
 
 
 # ============================================================
