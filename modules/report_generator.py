@@ -7,6 +7,11 @@ from html import escape
 import pandas as pd
 from PIL import Image as PILImage, ImageDraw, ImageFont
 
+# Matplotlib is used as a static fallback when Plotly/Kaleido cannot export PNGs.
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.platypus import (
@@ -172,8 +177,106 @@ def _footer(canvas, doc):
 
 
 # ============================================================
-# DASHBOARD COMPOSITE IMAGE
+# STATIC CHART FALLBACK FOR PDF
 # ============================================================
+
+def _render_chart_matplotlib(df, chart, output_path, width=560, height=320):
+    """Render a chart as a PNG without requiring Plotly/Kaleido/Chrome.
+
+    The interactive dashboard remains Plotly-based. This helper is only for
+    the static PDF so charts cannot disappear when Kaleido is unavailable.
+    """
+    category = chart.get("category")
+    metric = chart.get("metric")
+    chart_type = str(chart.get("chart_type", "Bar")).strip().lower()
+    title = safe(chart.get("title", "Business Chart"))
+    color = chart.get("color", "#2563EB") or "#2563EB"
+
+    work = df.copy()
+    fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("white")
+
+    # Resolve columns safely.
+    if category not in work.columns:
+        category = None
+    if metric not in work.columns:
+        metric = None
+
+    numeric_cols = work.select_dtypes(include="number").columns.tolist()
+    cat_cols = work.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+
+    if metric is None and numeric_cols:
+        metric = numeric_cols[0]
+    if category is None and cat_cols:
+        category = cat_cols[0]
+
+    if chart_type in {"scatter", "box"} and len(numeric_cols) >= 2:
+        x_col = metric or numeric_cols[0]
+        y_col = numeric_cols[1] if numeric_cols[1] != x_col else numeric_cols[0]
+        x = pd.to_numeric(work[x_col], errors="coerce")
+        y = pd.to_numeric(work[y_col], errors="coerce")
+        valid = x.notna() & y.notna()
+        x, y = x[valid], y[valid]
+        if chart_type == "box":
+            ax.boxplot(y.tolist(), patch_artist=False)
+            ax.set_xticks([1])
+            ax.set_xticklabels([pretty_column(y_col)])
+            ax.set_ylabel(pretty_column(y_col))
+        else:
+            ax.scatter(x, y, s=18, alpha=0.65)
+            ax.set_xlabel(pretty_column(x_col))
+            ax.set_ylabel(pretty_column(y_col))
+    elif chart_type in {"histogram", "hist"} and metric:
+        values = pd.to_numeric(work[metric], errors="coerce").dropna()
+        ax.hist(values, bins=12, edgecolor="white")
+        ax.set_xlabel(pretty_column(metric))
+        ax.set_ylabel("Count")
+    elif category and metric:
+        temp = work[[category, metric]].copy()
+        temp[metric] = pd.to_numeric(temp[metric], errors="coerce")
+        temp = temp.dropna(subset=[category, metric])
+        grouped = temp.groupby(category, dropna=False)[metric].sum().sort_values(ascending=False).head(10)
+        labels = [safe(x) for x in grouped.index]
+        values = grouped.values
+        if chart_type == "pie":
+            ax.pie(values, labels=labels, autopct="%1.0f%%", startangle=90)
+            ax.axis("equal")
+        elif chart_type in {"line", "area"}:
+            ax.plot(range(len(values)), values, marker="o", linewidth=2)
+            if chart_type == "area":
+                ax.fill_between(range(len(values)), values, alpha=0.18)
+            ax.set_xticks(range(len(labels)))
+            ax.set_xticklabels(labels, rotation=35, ha="right")
+            ax.set_ylabel(pretty_column(metric))
+        else:
+            ax.bar(range(len(values)), values)
+            ax.set_xticks(range(len(labels)))
+            ax.set_xticklabels(labels, rotation=35, ha="right")
+            ax.set_ylabel(pretty_column(metric))
+    elif metric:
+        values = pd.to_numeric(work[metric], errors="coerce").dropna()
+        ax.hist(values, bins=12, edgecolor="white")
+        ax.set_xlabel(pretty_column(metric))
+        ax.set_ylabel("Count")
+    elif category:
+        counts = work[category].astype(str).value_counts().head(10)
+        ax.bar(range(len(counts)), counts.values)
+        ax.set_xticks(range(len(counts)))
+        ax.set_xticklabels([safe(x) for x in counts.index], rotation=35, ha="right")
+        ax.set_ylabel("Count")
+    else:
+        ax.text(0.5, 0.5, "No suitable fields for this chart", ha="center", va="center")
+        ax.set_axis_off()
+
+    ax.set_title(title, loc="left", fontsize=11, fontweight="bold", pad=10)
+    ax.grid(axis="y", alpha=0.18)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+    fig.tight_layout(pad=1.2)
+    fig.savefig(output_path, format="png", bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
 
 def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
     """Render a complete sheet as one dashboard image, not individual PDF charts."""
@@ -237,10 +340,22 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
             y = header_h + gap + (idx // cols) * (tile_h + gap)
             canvas.paste(tile, (x, y))
         except Exception:
-            x = gap + (idx % cols) * (tile_w + gap)
-            y = header_h + gap + (idx // cols) * (tile_h + gap)
-            draw.rectangle((x, y, x + tile_w, y + tile_h), outline="#CBD5E1", width=2)
-            draw.text((x + 20, y + 25), "Chart could not be rendered", fill="#64748B", font=small_font)
+            # Plotly/Kaleido can fail on machines where Kaleido or its browser
+            # runtime is unavailable. Fall back to Matplotlib so the PDF still
+            # contains the actual chart instead of an empty placeholder.
+            try:
+                fallback_path = image_dir / f"sheet_{sheet_index}_tile_{idx}_fallback.png"
+                _render_chart_matplotlib(df, chart, fallback_path, tile_w, tile_h)
+                tile = PILImage.open(fallback_path).convert("RGB")
+                x = gap + (idx % cols) * (tile_w + gap)
+                y = header_h + gap + (idx // cols) * (tile_h + gap)
+                canvas.paste(tile.resize((tile_w, tile_h)), (x, y))
+            except Exception as fallback_error:
+                x = gap + (idx % cols) * (tile_w + gap)
+                y = header_h + gap + (idx // cols) * (tile_h + gap)
+                draw.rectangle((x, y, x + tile_w, y + tile_h), outline="#CBD5E1", width=2)
+                draw.text((x + 20, y + 25), "Chart could not be rendered", fill="#64748B", font=small_font)
+                draw.text((x + 20, y + 50), safe(fallback_error)[:90], fill="#94A3B8", font=small_font)
 
     out_path = Path(output_dir) / f"dashboard_panel_{sheet_index}.png"
     canvas.save(out_path, quality=92)
