@@ -7,7 +7,6 @@ from html import escape
 import pandas as pd
 from PIL import Image as PILImage, ImageDraw, ImageFont
 
-
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.platypus import (
@@ -163,285 +162,80 @@ def _paragraph_styles():
     return styles
 
 
-def _footer(canvas, doc):
-    canvas.saveState()
-    canvas.setFont("Helvetica", 7)
-    canvas.setFillColor(colors.HexColor("#64748B"))
-    canvas.drawString(18 * mm, 10 * mm, "Automated Business Intelligence Report")
-    canvas.drawRightString(A4[0] - 18 * mm, 10 * mm, f"Page {doc.page}")
-    canvas.restoreState()
-
-
-# ============================================================
-# STATIC CHART FALLBACK FOR PDF
-# ============================================================
-
-def _hex_rgb(value, fallback=(37, 99, 235)):
-    """Convert a hex colour to an RGB tuple for the PIL fallback."""
+def _style_neon_figure(fig, chart=None):
+    """Use the exact same Plotly styling as the Streamlit dashboard."""
     try:
-        text = str(value or "").strip().lstrip("#")
-        if len(text) == 3:
-            text = "".join(ch * 2 for ch in text)
-        if len(text) == 6:
-            return tuple(int(text[i:i+2], 16) for i in (0, 2, 4))
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(7,18,40,0.72)",
+            font=dict(
+                family="Inter, Segoe UI, sans-serif",
+                color="#DCEBFF",
+                size=12,
+            ),
+            title=dict(
+                font=dict(color="#F6FAFF", size=17),
+                x=0.02,
+                xanchor="left",
+            ),
+            margin=dict(l=35, r=20, t=55, b=50),
+            hovermode="closest",
+            hoverlabel=dict(
+                bgcolor="#0A1730",
+                bordercolor="#2B5B91",
+                font=dict(color="#F7FAFF", size=12),
+            ),
+            legend=dict(
+                font=dict(color="#AFC3DF", size=11),
+                bgcolor="rgba(0,0,0,0)",
+                title_text="",
+            ),
+            xaxis=dict(
+                color="#90A9CA",
+                gridcolor="rgba(55,91,145,.28)",
+                linecolor="rgba(77,113,169,.35)",
+                zerolinecolor="rgba(77,113,169,.25)",
+                title_font=dict(color="#8EA9CA"),
+            ),
+            yaxis=dict(
+                color="#90A9CA",
+                gridcolor="rgba(55,91,145,.28)",
+                linecolor="rgba(77,113,169,.35)",
+                zerolinecolor="rgba(77,113,169,.25)",
+                title_font=dict(color="#8EA9CA"),
+            ),
+            height=360,
+        )
+
+        if chart and str(chart.get("chart_type", "")).lower() == "pie":
+            neon = [
+                "#22D3EE", "#8B5CF6", "#EC4899", "#FB923C",
+                "#34D399", "#3B82F6", "#FBBF24", "#F472B6"
+            ]
+            for trace in fig.data:
+                if hasattr(trace, "marker") and trace.marker is not None:
+                    try:
+                        trace.marker.colors = neon
+                    except Exception:
+                        pass
+
+        for trace in fig.data:
+            try:
+                if getattr(trace, "mode", None) and "lines" in str(trace.mode):
+                    trace.line.width = 3
+            except Exception:
+                pass
     except Exception:
         pass
-    return fallback
+    return fig
 
 
-def _safe_font(bold=False, size=16):
-    candidates = []
-    if bold:
-        candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-        ]
-    else:
-        candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-        ]
-    for font_path in candidates:
-        try:
-            return ImageFont.truetype(font_path, size=size)
-        except Exception:
-            continue
-    return ImageFont.load_default()
-
-
-def _draw_wrapped_title(draw, title, x, y, width, font):
-    """Draw a compact title, clipped to the available width."""
-    text = safe(title)
-    try:
-        bbox = draw.textbbox((0, 0), text, font=font)
-        if bbox[2] - bbox[0] > width:
-            while len(text) > 4:
-                text = text[:-4] + "..."
-                bbox = draw.textbbox((0, 0), text, font=font)
-                if bbox[2] - bbox[0] <= width:
-                    break
-    except Exception:
-        text = text[:55]
-    draw.text((x, y), text, fill=(22, 58, 99), font=font)
-
-
-def _render_chart_pil(df, chart, output_path, width=560, height=320):
-    """Render a static chart using Pillow only.
-
-    This is used only when Plotly/Kaleido cannot export a PNG. It avoids
-    optional plotting packages so the Streamlit Cloud app can still build a
-    visual PDF.
-    """
-    category = chart.get("category")
-    metric = chart.get("metric")
-    chart_type = str(chart.get("chart_type", "Bar")).strip().lower()
-    title = safe(chart.get("title", "Business Chart"))
-    color = _hex_rgb(chart.get("color", "#2563EB"))
-    work = df.copy()
-
-    if category not in work.columns:
-        category = None
-    if metric not in work.columns:
-        metric = None
-
-    numeric_cols = work.select_dtypes(include="number").columns.tolist()
-    cat_cols = work.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
-    if metric is None and numeric_cols:
-        metric = numeric_cols[0]
-    if category is None and cat_cols:
-        category = cat_cols[0]
-
-    img = PILImage.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(img)
-    title_font = _safe_font(bold=True, size=20)
-    label_font = _safe_font(bold=False, size=12)
-    small_font = _safe_font(bold=False, size=10)
-
-    _draw_wrapped_title(draw, title, 18, 14, width - 36, title_font)
-
-    left, top, right, bottom = 55, 55, width - 22, height - 42
-    plot_w = max(1, right - left)
-    plot_h = max(1, bottom - top)
-
-    # Determine grouped values for categorical charts.
-    grouped = None
-    if category and metric:
-        temp = work[[category, metric]].copy()
-        temp[metric] = pd.to_numeric(temp[metric], errors="coerce")
-        temp = temp.dropna(subset=[category, metric])
-        if not temp.empty:
-            grouped = temp.groupby(category, dropna=False)[metric].sum().sort_values(ascending=False).head(10)
-
-    def draw_axes(y_max):
-        y_max = float(y_max) if y_max and y_max > 0 else 1.0
-        draw.line((left, bottom, right, bottom), fill=(148, 163, 184), width=1)
-        draw.line((left, top, left, bottom), fill=(148, 163, 184), width=1)
-        for tick in range(5):
-            frac = tick / 4
-            y = bottom - int(plot_h * frac)
-            draw.line((left, y, right, y), fill=(226, 232, 240), width=1)
-            val = y_max * frac
-            draw.text((3, y - 7), fmt_num(val), fill=(100, 116, 139), font=small_font)
-        return y_max
-
-    if chart_type in {"scatter", "box"} and len(numeric_cols) >= 2:
-        x_col = metric or numeric_cols[0]
-        y_col = numeric_cols[1] if numeric_cols[1] != x_col else numeric_cols[0]
-        x = pd.to_numeric(work[x_col], errors="coerce")
-        y = pd.to_numeric(work[y_col], errors="coerce")
-        valid = x.notna() & y.notna()
-        x, y = x[valid], y[valid]
-        if not x.empty and not y.empty:
-            if chart_type == "box":
-                vals = y.astype(float).tolist()
-                vals.sort()
-                q1 = vals[max(0, int(0.25 * (len(vals)-1)))]
-                med = vals[max(0, int(0.50 * (len(vals)-1)))]
-                q3 = vals[max(0, int(0.75 * (len(vals)-1)))]
-                vmin, vmax = min(vals), max(vals)
-                draw_axes(vmax if vmax > 0 else 1)
-                def sy(v):
-                    return bottom - int((v / (vmax if vmax > 0 else 1)) * plot_h)
-                cx = (left + right) // 2
-                box_w = 80
-                draw.line((cx, sy(vmin), cx, sy(vmax)), fill=color, width=3)
-                draw.rectangle((cx-box_w//2, sy(q3), cx+box_w//2, sy(q1)), outline=color, width=3)
-                draw.line((cx-box_w//2, sy(med), cx+box_w//2, sy(med)), fill=color, width=3)
-                draw.text((cx-25, bottom+8), pretty_column(y_col), fill=(51,65,85), font=label_font)
-            else:
-                x_min, x_max = float(x.min()), float(x.max())
-                y_min, y_max = float(y.min()), float(y.max())
-                x_span = (x_max-x_min) or 1.0
-                y_span = (y_max-y_min) or 1.0
-                draw_axes(y_max if y_max > 0 else 1)
-                # Redraw with a baseline-independent y mapping for scatter.
-                for xv, yv in zip(x.tolist()[:600], y.tolist()[:600]):
-                    px = left + int(((float(xv)-x_min)/x_span) * plot_w)
-                    py = bottom - int(((float(yv)-y_min)/y_span) * plot_h)
-                    r = 3
-                    draw.ellipse((px-r, py-r, px+r, py+r), fill=color)
-                draw.text((left, bottom+10), pretty_column(x_col), fill=(51,65,85), font=label_font)
-                draw.text((max(2, left-50), top+2), pretty_column(y_col), fill=(51,65,85), font=label_font)
-        else:
-            draw.text((width//2-90, height//2), "No usable numeric data", fill=(100,116,139), font=label_font)
-
-    elif chart_type in {"histogram", "hist"} and metric:
-        values = pd.to_numeric(work[metric], errors="coerce").dropna()
-        if not values.empty:
-            counts, edges = pd.cut(values, bins=10, retbins=True, labels=False, duplicates="drop")
-            freq = counts.value_counts().sort_index()
-            bins = int(max(1, len(edges)-1))
-            heights = [int(freq.get(i, 0)) for i in range(bins)]
-            draw_axes(max(heights) if heights else 1)
-            gap = 4
-            bw = max(2, (plot_w - gap*(bins-1)) // bins)
-            max_h = max(heights) if heights else 1
-            for i, h in enumerate(heights):
-                x0 = left + i*(bw+gap)
-                h_px = int((h/max_h)*plot_h) if max_h else 0
-                draw.rectangle((x0, bottom-h_px, x0+bw, bottom), fill=color)
-            draw.text((left, bottom+10), pretty_column(metric), fill=(51,65,85), font=label_font)
-        else:
-            draw.text((width//2-90, height//2), "No usable data", fill=(100,116,139), font=label_font)
-
-    elif grouped is not None and not grouped.empty:
-        labels = [safe(x) for x in grouped.index]
-        values = [float(v) for v in grouped.values]
-        max_val = max(values) if values else 1.0
-        if chart_type == "pie":
-            total = sum(values) or 1.0
-            cx, cy = (left+right)//2, (top+bottom)//2 + 5
-            radius = min(plot_h, plot_w)//3
-            start = -90.0
-            pie_colors = [color, (124,58,237), (219,39,119), (22,163,74), (234,88,12), (8,145,178), (202,138,4), (220,38,38), (79,70,229), (15,118,110)]
-            for i, v in enumerate(values):
-                end = start + 360.0 * (v/total)
-                draw.pieslice((cx-radius, cy-radius, cx+radius, cy+radius), start=start, end=end, fill=pie_colors[i % len(pie_colors)])
-                start = end
-            legend_x = right - 125
-            legend_y = top + 5
-            for i, label in enumerate(labels):
-                yy = legend_y + i*22
-                draw.rectangle((legend_x, yy, legend_x+12, yy+12), fill=pie_colors[i % len(pie_colors)])
-                short = label if len(label) <= 18 else label[:15] + "..."
-                draw.text((legend_x+18, yy-2), short, fill=(51,65,85), font=small_font)
-        else:
-            draw_axes(max_val)
-            n = len(values)
-            if chart_type in {"line", "area"}:
-                points = []
-                for i, v in enumerate(values):
-                    px = left + int((i/max(1,n-1))*plot_w)
-                    py = bottom - int((v/max_val)*plot_h)
-                    points.append((px,py))
-                if chart_type == "area" and len(points) > 1:
-                    draw.polygon(points + [(points[-1][0], bottom), (points[0][0], bottom)], fill=tuple(min(255, x+80) for x in color))
-                if len(points) > 1:
-                    draw.line(points, fill=color, width=4)
-                for px, py in points:
-                    draw.ellipse((px-4,py-4,px+4,py+4), fill=color)
-            else:
-                n = len(values)
-                gap = 8
-                bw = max(6, (plot_w - gap*(n+1))//max(n,1))
-                for i,v in enumerate(values):
-                    x0 = left + gap + i*(bw+gap)
-                    h = int((v/max_val)*plot_h)
-                    draw.rounded_rectangle((x0, bottom-h, x0+bw, bottom), radius=4, fill=color)
-            for i, label in enumerate(labels):
-                px = left + int((i/max(1,n-1))*plot_w) if chart_type in {"line","area"} else left + gap + i*(bw+gap) + bw//2
-                short = label if len(label) <= 12 else label[:10] + "..."
-                draw.text((px-18, bottom+8), short, fill=(51,65,85), font=small_font)
-            draw.text((left, top-20), pretty_column(metric), fill=(51,65,85), font=label_font)
-
-    elif metric:
-        # Metric-only fallback: compact histogram.
-        values = pd.to_numeric(work[metric], errors="coerce").dropna()
-        if not values.empty:
-            # Quantile buckets are robust for skewed business data.
-            try:
-                bucket = pd.qcut(values, q=min(10, values.nunique()), duplicates="drop")
-                counts = bucket.value_counts().sort_index()
-                heights = counts.tolist()
-            except Exception:
-                heights = [len(values)]
-            draw_axes(max(heights) if heights else 1)
-            n = len(heights)
-            gap = 7
-            bw = max(6, (plot_w - gap*(n+1))//max(n,1))
-            max_h = max(heights) if heights else 1
-            for i,h in enumerate(heights):
-                x0 = left + gap + i*(bw+gap)
-                hp = int((h/max_h)*plot_h)
-                draw.rectangle((x0, bottom-hp, x0+bw, bottom), fill=color)
-            draw.text((left, top-20), pretty_column(metric), fill=(51,65,85), font=label_font)
-    elif category:
-        counts = work[category].astype(str).value_counts().head(10)
-        if not counts.empty:
-            values = counts.values.tolist()
-            draw_axes(max(values) if values else 1)
-            n = len(values)
-            gap = 8
-            bw = max(6, (plot_w - gap*(n+1))//max(n,1))
-            max_h = max(values) if values else 1
-            for i,h in enumerate(values):
-                x0 = left + gap + i*(bw+gap)
-                hp = int((h/max_h)*plot_h)
-                draw.rectangle((x0, bottom-hp, x0+bw, bottom), fill=color)
-                label = safe(counts.index[i])
-                label = label if len(label)<=12 else label[:10]+"..."
-                draw.text((x0, bottom+8), label, fill=(51,65,85), font=small_font)
-            draw.text((left, top-20), "Record Count", fill=(51,65,85), font=label_font)
-    else:
-        draw.rounded_rectangle((left, top, right, bottom), radius=12, outline=(203,213,225), width=2)
-        msg = "No suitable fields for this chart"
-        draw.text((width//2-95, height//2), msg, fill=(100,116,139), font=label_font)
-
-    img.save(output_path, format="PNG", optimize=True)
-
+# ============================================================
+# DASHBOARD COMPOSITE IMAGE
+# ============================================================
 
 def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
-    """Render a complete sheet as one dashboard image, not individual PDF charts."""
+    """Render the exact charts used by the Streamlit dashboard as one PDF panel."""
     charts = sorted(
         sheet.get("charts", []),
         key=lambda x: x.get("position", 999),
@@ -457,10 +251,10 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
     canvas_w = cols * tile_w + (cols + 1) * gap
     canvas_h = header_h + rows * tile_h + (rows + 1) * gap
 
-    canvas = PILImage.new("RGB", (canvas_w, canvas_h), "white")
+    # The PDF panel uses the same midnight-blue visual language as Streamlit.
+    canvas = PILImage.new("RGB", (canvas_w, canvas_h), "#071228")
     draw = ImageDraw.Draw(canvas)
 
-    # Simple font fallback keeps this dependency-free.
     try:
         font = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
         small_font = ImageFont.truetype("DejaVuSans.ttf", 17)
@@ -469,11 +263,11 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
         small_font = ImageFont.load_default()
 
     sheet_name = safe(sheet.get("name", f"Dashboard Sheet {sheet_index}"))
-    draw.text((gap, 18), sheet_name, fill="#163A63", font=font)
+    draw.text((gap, 18), sheet_name, fill="#F6FAFF", font=font)
     draw.text(
         (gap, 55),
-        f"Complete dashboard panel • {len(charts)} related analytical views",
-        fill="#64748B",
+        f"Same Streamlit dashboard charts • {len(charts)} analytical views",
+        fill="#8FB7DD",
         font=small_font,
     )
 
@@ -481,45 +275,37 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
     image_dir.mkdir(parents=True, exist_ok=True)
 
     for idx, chart in enumerate(charts):
-        try:
-            fig = create_chart(
-                df,
-                category=chart.get("category"),
-                metric=chart.get("metric"),
-                chart_type=chart.get("chart_type", "Bar"),
-                color=chart.get("color", "#2563EB"),
-                title=chart.get("title", "Business Chart"),
-            )
-            fig.update_layout(
-                width=tile_w,
-                height=tile_h,
-                margin=dict(l=30, r=20, t=50, b=35),
-            )
-            tile_path = image_dir / f"sheet_{sheet_index}_tile_{idx}.png"
-            fig.write_image(str(tile_path), format="png", width=tile_w, height=tile_h, scale=1)
-            tile = PILImage.open(tile_path).convert("RGB")
-            x = gap + (idx % cols) * (tile_w + gap)
-            y = header_h + gap + (idx // cols) * (tile_h + gap)
-            canvas.paste(tile, (x, y))
-        except Exception:
-            # Plotly/Kaleido may not be available on Streamlit Cloud. Use a
-            # Pillow-only renderer so the PDF still contains actual charts.
-            try:
-                fallback_path = image_dir / f"sheet_{sheet_index}_tile_{idx}_fallback.png"
-                _render_chart_pil(df, chart, fallback_path, tile_w, tile_h)
-                tile = PILImage.open(fallback_path).convert("RGB")
-                x = gap + (idx % cols) * (tile_w + gap)
-                y = header_h + gap + (idx // cols) * (tile_h + gap)
-                canvas.paste(tile.resize((tile_w, tile_h)), (x, y))
-            except Exception as fallback_error:
-                x = gap + (idx % cols) * (tile_w + gap)
-                y = header_h + gap + (idx // cols) * (tile_h + gap)
-                draw.rectangle((x, y, x + tile_w, y + tile_h), outline="#CBD5E1", width=2)
-                draw.text((x + 20, y + 25), "Chart could not be rendered", fill="#64748B", font=small_font)
-                draw.text((x + 20, y + 50), safe(fallback_error)[:90], fill="#94A3B8", font=small_font)
+        # IMPORTANT: no replacement/random charts. The exact chart definition
+        # from st.session_state.sheets is sent through the same chart engine.
+        fig = create_chart(
+            df,
+            category=chart.get("category"),
+            metric=chart.get("metric"),
+            chart_type=chart.get("chart_type", "Bar"),
+            color=chart.get("color", "#22D3EE"),
+            title=chart.get("title", "Business Chart"),
+        )
+        fig = _style_neon_figure(fig, chart)
+        fig.update_layout(width=tile_w, height=tile_h)
+
+        tile_path = image_dir / f"sheet_{sheet_index}_tile_{idx}.png"
+        # Use the exact Plotly figure rendered by Streamlit. Kaleido is only
+        # the image exporter needed to place that same figure in the PDF.
+        fig.write_image(
+            str(tile_path),
+            format="png",
+            width=tile_w,
+            height=tile_h,
+            scale=1,
+            engine="kaleido",
+        )
+        tile = PILImage.open(tile_path).convert("RGB")
+        x = gap + (idx % cols) * (tile_w + gap)
+        y = header_h + gap + (idx // cols) * (tile_h + gap)
+        canvas.paste(tile, (x, y))
 
     out_path = Path(output_dir) / f"dashboard_panel_{sheet_index}.png"
-    canvas.save(out_path, quality=92)
+    canvas.save(out_path, quality=94)
     return out_path
 
 
@@ -641,10 +427,10 @@ def generate_pdf(
 ):
     """Generate a compact, professional 10–15 page management report.
 
-    Dashboard charts are never inserted as individual PDF charts. Each sheet
-    is rendered as one combined dashboard panel, followed by one whole-panel
-    explanation. Statistics are summarized rather than reproduced as long
-    technical tables.
+    Dashboard charts are the same chart definitions used by the Streamlit
+    dashboard: the same sheet order, category, metric, chart type, title,
+    colour and Plotly styling. They are rendered as combined sheet panels for
+    the PDF; no fallback or replacement charts are generated.
     """
     document = SimpleDocTemplate(
         file_path,
@@ -909,92 +695,33 @@ def generate_pdf(
     story.append(PageBreak())
 
     # --------------------------------------------------------
-    # 6. ASK DATA — COMPLETE QUESTIONS + CALCULATED ANSWERS
+    # 6. MANAGEMENT QUESTIONS — ALL QUESTIONS + EXPLANATIONS
     # --------------------------------------------------------
-    story.append(Paragraph("5. Ask Data — Management Focus Questions", styles["Section"]))
+    story.append(Paragraph("5. Management Focus Questions", styles["Section"]))
     story.append(Paragraph(
-        "This section contains the complete question set shown by Ask Data for the uploaded dataset. "
-        "Questions that can be calculated from the available fields are shown with their actual data-based answer. "
-        "Questions that cannot be reliably calculated are still retained and clearly identified so management knows what additional analysis or data would be required.",
+        "These are the business questions generated from the uploaded schema. Each question is included because it represents an area management can investigate using the dashboard and available data. The explanation below each question describes why the area deserves attention.",
         styles["Normal"],
     ))
-    story.append(Spacer(1, 7))
+    story.append(Spacer(1, 8))
 
     all_questions = []
     seen = set()
-    for item in (questions or []):
-        if isinstance(item, dict):
-            q = re.sub(r"\s+", " ", str(item.get("question", ""))).strip()
-            answer = re.sub(r"\s+", " ", str(item.get("answer", ""))).strip()
-            evidence = re.sub(r"\s+", " ", str(item.get("evidence", ""))).strip()
-            note = re.sub(r"\s+", " ", str(item.get("note", ""))).strip()
-            answerable = bool(item.get("answerable", True))
-        else:
-            q = re.sub(r"\s+", " ", str(item)).strip()
-            answer = ""
-            evidence = ""
-            note = ""
-            answerable = False
-
-        if not q or q.lower() in seen:
-            continue
-        seen.add(q.lower())
-        all_questions.append({
-            "question": q,
-            "answer": answer,
-            "evidence": evidence,
-            "note": note,
-            "answerable": answerable,
-        })
+    for q in (questions or []):
+        q = re.sub(r"\s+", " ", str(q)).strip()
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            all_questions.append(q)
 
     if all_questions:
-        for i, item in enumerate(all_questions, start=1):
-            q = item["question"]
-            answer = item["answer"]
-            evidence = item["evidence"]
-            note = item["note"]
-
+        for i, q in enumerate(all_questions, start=1):
+            story.append(Paragraph(f"<b>{i}. {safe(q)}</b>", styles["Question"]))
             story.append(Paragraph(
-                f"<b>{i}. {safe(q)}</b>",
-                styles["Question"],
-            ))
-
-            if item["answerable"] and answer:
-                story.append(Paragraph(
-                    f"<b>Answer:</b> {safe(answer)}",
-                    styles["Small"],
-                ))
-            else:
-                story.append(Paragraph(
-                    "<b>Answer:</b> This question could not be reliably calculated from the available fields.",
-                    styles["Small"],
-                ))
-
-            if evidence:
-                story.append(Paragraph(
-                    f"<b>Data evidence:</b> {safe(evidence)}",
-                    styles["Small"],
-                ))
-
-            management_reason = _management_explanation(df, q)
-            story.append(Paragraph(
-                f"<b>Why management should focus on this:</b> {safe(management_reason)}",
+                f"<b>Why management should focus on this:</b> {_management_explanation(df, q)}",
                 styles["Small"],
             ))
-
-            if note and note.lower() not in {"calculated directly from the uploaded data.", "calculated directly from the uploaded dataframe."}:
-                story.append(Paragraph(
-                    f"<b>Note:</b> {safe(note)}",
-                    styles["Small"],
-                ))
-
-            story.append(Spacer(1, 4))
+            story.append(Spacer(1, 5))
     else:
-        story.append(Paragraph(
-            "No Ask Data questions were generated for this dataset.",
-            styles["Normal"],
-        ))
-
+        story.append(Paragraph("No business questions were generated for this dataset.", styles["Normal"]))
     story.append(PageBreak())
 
     # --------------------------------------------------------
