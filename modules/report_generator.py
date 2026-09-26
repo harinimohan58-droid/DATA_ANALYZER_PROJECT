@@ -866,4 +866,4 @@ def generate_pdf(
             styles["Small"],
         ))
 
-    document.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    document.build(story)
