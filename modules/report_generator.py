@@ -25,6 +25,21 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from modules.chart_engine import create_chart
 
 
+def _configure_kaleido_browser():
+    """Point Kaleido at Streamlit Community Cloud's Chromium binary when available."""
+    if os.environ.get("BROWSER_PATH"):
+        return
+    if os.name != "posix":
+        return
+    for browser in ("/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome-stable", "/usr/bin/google-chrome", "/usr/bin/chrome"):
+        if os.path.exists(browser):
+            os.environ["BROWSER_PATH"] = browser
+            return
+
+
+_configure_kaleido_browser()
+
+
 # ============================================================
 # SAFE / FORMATTING HELPERS
 # ============================================================
