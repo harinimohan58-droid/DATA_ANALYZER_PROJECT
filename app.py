@@ -1030,14 +1030,23 @@ def _bi_fmt(value):
 # The palette is applied to generated charts so the dashboard is
 # colourful without changing the user's chart layout or interactions.
 DASHBOARD_PALETTE = [
-    "#2563EB", "#7C3AED", "#DB2777", "#EA580C", "#16A34A",
-    "#0891B2", "#CA8A04", "#DC2626", "#4F46E5", "#0F766E",
-    "#9333EA", "#0284C7"
+    "#22305C",  # navy
+    "#E0553F",  # coral
+    "#5FB57A",  # green
+    "#6F7FEF",  # soft indigo
+    "#F0B85A",  # warm amber
+    "#39B8D6",  # teal
+    "#9B7FEA",  # lavender
+    "#F276A0",  # rose
+    "#6CA9F2",  # soft blue
+    "#7CC9A4",  # mint
+    "#D58B6A",  # terracotta
+    "#8A93A6",  # slate
 ]
 
 
 def _apply_dashboard_palette(sheets):
-    """Assign attractive, different chart colours while preserving order."""
+    """Assign attractive pastel/dashboard colours while preserving chart order."""
     for sheet_index, sheet in enumerate(sheets or []):
         for chart_index, chart in enumerate(sheet.get("charts", [])):
             chart["color"] = DASHBOARD_PALETTE[
@@ -1045,6 +1054,96 @@ def _apply_dashboard_palette(sheets):
             ]
     return sheets
 
+
+def _style_neon_figure(fig, chart=None):
+    """Apply the requested clean navy + coral + pastel dashboard theme to Plotly charts."""
+    try:
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="#FFFFFF",
+            font=dict(
+                family="Inter, Segoe UI, sans-serif",
+                color="#22305C",
+                size=12,
+            ),
+            title=dict(
+                font=dict(color="#22305C", size=17),
+                x=0.02,
+                xanchor="left",
+            ),
+            margin=dict(l=44, r=20, t=58, b=42),
+            hoverlabel=dict(
+                bgcolor="#22305C",
+                bordercolor="#E0553F",
+                font=dict(color="#FFFFFF", size=12),
+            ),
+            legend=dict(
+                font=dict(color="#475569", size=11),
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            xaxis=dict(
+                color="#475569",
+                gridcolor="#F0E6DC",
+                linecolor="#D9D0C8",
+                zerolinecolor="#E8DED6",
+                title_font=dict(color="#667085"),
+            ),
+            yaxis=dict(
+                color="#475569",
+                gridcolor="#F0E6DC",
+                linecolor="#D9D0C8",
+                zerolinecolor="#E8DED6",
+                title_font=dict(color="#667085"),
+            ),
+        )
+
+        # Match the reference's soft multi-colour chart treatment.
+        if chart and str(chart.get("chart_type", "")).lower() == "pie":
+            pastel = [
+                "#22305C", "#E0553F", "#5FB57A", "#6F7FEF",
+                "#F0B85A", "#39B8D6", "#9B7FEA", "#F276A0"
+            ]
+            for trace in fig.data:
+                try:
+                    trace.marker.colors = pastel
+                except Exception:
+                    pass
+
+        for trace in fig.data:
+            trace_type = str(getattr(trace, "type", "")).lower()
+            mode = str(getattr(trace, "mode", "")).lower()
+            try:
+                if trace_type == "bar":
+                    count = len(trace.x) if trace.x is not None else len(trace.y)
+                    trace.marker.color = [
+                        DASHBOARD_PALETTE[i % len(DASHBOARD_PALETTE)]
+                        for i in range(max(count, 1))
+                    ]
+                    trace.marker.line = dict(color="#FFFFFF", width=1)
+                elif trace_type == "scatter" and "lines" in mode:
+                    trace.line.color = (chart or {}).get("color", "#22305C")
+                    trace.line.width = 3
+                elif trace_type in ("scatter", "scattergl") and "markers" in mode:
+                    trace.marker.size = 8
+                    trace.marker.color = (chart or {}).get("color", "#22305C")
+                    trace.marker.line = dict(color="#FFFFFF", width=1)
+                elif trace_type == "pie":
+                    trace.marker.line = dict(color="#FFFFFF", width=2)
+                else:
+                    try:
+                        trace.marker.color = (chart or {}).get("color", "#22305C")
+                    except Exception:
+                        pass
+                    try:
+                        trace.line.color = (chart or {}).get("color", "#22305C")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return fig
 
 def build_business_insights(df, sheets=None):
     """Generate insights only from fields that actually exist in the uploaded data."""
@@ -1202,25 +1301,371 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    :root {
+        --navy: #22305C;
+        --coral: #E0553F;
+        --green: #5FB57A;
+        --amber: #F0B85A;
+        --teal: #39B8D6;
+        --lavender: #8C7AE6;
+        --bg: #FBF6F1;
+        --surface: #FFFFFF;
+        --surface-soft: #F8F1EB;
+        --border: #EEE1D6;
+        --text: #22305C;
+        --muted: #7C756D;
+    }
+
+    .stApp {
+        background: var(--bg) !important;
+        color: var(--text) !important;
+    }
+
+    header[data-testid="stHeader"],
+    .stApp > header {
+        background: transparent !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        border: 0 !important;
+        box-shadow: none !important;
+    }
+    header[data-testid="stHeader"] * { visibility: hidden !important; }
+    [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"] {
+        display: none !important;
+    }
+
+    div[data-testid="stAppViewContainer"],
+    div[data-testid="stAppViewContainer"] > section.main {
+        background: var(--bg) !important;
+    }
+
+    .main .block-container {
+        max-width: 100% !important;
+        padding-top: 0.4rem !important;
+        padding-bottom: 2.5rem !important;
+    }
+
+    /* Main top navigation / app bar */
+    .ds-topbar {
+        background: var(--navy);
+        border-radius: 10px;
+        padding: 12px 18px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 18px;
+        box-shadow: 0 8px 22px rgba(34,48,92,.14);
+    }
+    .ds-topbar-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #FFFFFF;
+        font-size: 18px;
+        font-weight: 700;
+    }
+    .ds-logo {
+        width: 34px;
+        height: 34px;
+        border-radius: 9px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--coral);
+        color: #FFFFFF;
+        font-size: 17px;
+        font-weight: 900;
+    }
+    .ds-topnav {
+        display: flex;
+        align-items: center;
+        gap: 26px;
+        color: #B9C2D9;
+        font-size: 13px;
+    }
+    .ds-topnav .active {
+        color: #FFFFFF;
+        font-weight: 600;
+        position: relative;
+    }
+    .ds-topnav .active::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -12px;
+        height: 2px;
+        background: var(--coral);
+        border-radius: 2px;
+    }
 
     .main-title {
-        font-size: 38px;
+        font-size: 36px;
+        font-weight: 750;
+        color: var(--navy);
+        letter-spacing: -.03em;
+        margin-top: 4px;
+    }
+    .main-subtitle {
+        margin-top: 5px;
+        color: #7C756D;
+        font-size: 14px;
+    }
+
+    .hero-panel {
+        position: relative;
+        overflow: hidden;
+        margin: 14px 0 18px;
+        padding: 22px 24px;
+        border-radius: 14px;
+        border: 1px solid #E8DDD3;
+        background: linear-gradient(105deg, #F1ECFF 0%, #FFFFFF 54%, #FBE8EE 100%);
+        box-shadow: 0 8px 22px rgba(34,48,92,.06);
+    }
+    .hero-kicker {
+        color: var(--coral);
+        font-size: 11px;
+        font-weight: 750;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+    }
+    .hero-title {
+        color: var(--navy);
+        font-size: 25px;
+        font-weight: 750;
+        line-height: 1.2;
+        margin-top: 5px;
+    }
+    .hero-copy {
+        color: #596275;
+        font-size: 13px;
+        line-height: 1.55;
+        max-width: 930px;
+        margin-top: 8px;
+    }
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background: #FBF7F2 !important;
+        border-right: 1px solid #EEE1D6 !important;
+    }
+    section[data-testid="stSidebar"] > div {
+        background: #FBF7F2 !important;
+    }
+    .bi-brand {
+        padding: 8px 4px 16px;
+        border-bottom: 1px solid #EDE4DC;
+        margin-bottom: 14px;
+    }
+    .bi-brand-name {
+        color: var(--navy);
+        font-size: 19px;
+        font-weight: 750;
+    }
+    .bi-brand-subtitle {
+        color: #897F75;
+        font-size: 11px;
+        margin-top: 3px;
+        line-height: 1.4;
+    }
+    .neon-section-card {
+        padding: 13px 15px;
+        border-radius: 11px;
+        background: linear-gradient(135deg, #FFFFFF, #FFF5EF);
+        border: 1px solid #EEE1D6;
+        box-shadow: 0 5px 15px rgba(34,48,92,.04);
+    }
+    .neon-section-label {
+        color: var(--coral);
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .10em;
+    }
+    .neon-section-value {
+        color: var(--navy);
+        font-size: 15px;
         font-weight: 700;
+        margin-top: 4px;
+    }
+
+    /* Cards and metrics */
+    div[data-testid="stMetric"] {
+        background: #FFFFFF !important;
+        border: 1px solid #EEE1D6 !important;
+        border-radius: 10px !important;
+        padding: 14px 16px !important;
+        box-shadow: 0 5px 15px rgba(34,48,92,.045) !important;
+    }
+    div[data-testid="stMetric"] label {
+        color: #8A7A6D !important;
+        font-weight: 500 !important;
+    }
+    div[data-testid="stMetricValue"] {
+        color: var(--navy) !important;
+        font-size: 1.9rem !important;
+        font-weight: 700 !important;
+    }
+    div[data-testid="stMetricDelta"] { color: var(--green) !important; }
+
+    .neon-kpi {
+        position: relative;
+        min-height: 102px;
+        padding: 16px 17px;
+        border-radius: 11px;
+        overflow: hidden;
+        border: 1px solid #EEE1D6;
+        background: #FFFFFF;
+        box-shadow: 0 6px 18px rgba(34,48,92,.055);
+    }
+    .neon-kpi::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        height: 4px;
+        width: 100%;
+        background: var(--accent);
+    }
+    .neon-kpi-label {
+        color: #8A7A6D;
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: .02em;
+    }
+    .neon-kpi-value {
+        color: var(--navy);
+        font-size: 28px;
+        line-height: 1.05;
+        font-weight: 750;
+        margin-top: 9px;
+    }
+    .neon-kpi-icon {
+        position: absolute;
+        right: 14px;
+        top: 13px;
+        width: 36px;
+        height: 36px;
+        border-radius: 11px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 12%, white);
+        border: 1px solid color-mix(in srgb, var(--accent) 18%, white);
+    }
+
+    .business-card {
+        padding: 18px;
+        border-radius: 12px;
+        border: 1px solid #EEE1D6;
+        background: #FFFFFF;
+        box-shadow: 0 6px 18px rgba(34,48,92,.045);
     }
 
     .section-title {
         font-size: 26px;
-        font-weight: 650;
-        margin-top: 20px;
+        font-weight: 750;
+        color: var(--navy);
+        margin-top: 12px;
+        margin-bottom: 8px;
+    }
+    h1,h2,h3,h4 { color: var(--navy) !important; }
+    p,span,label,div { }
+
+    /* Streamlit buttons */
+    .stButton > button,
+    .stDownloadButton > button {
+        border-radius: 8px !important;
+        border: 1px solid #E7D8CC !important;
+        color: var(--navy) !important;
+        background: #FFFFFF !important;
+        box-shadow: 0 4px 12px rgba(34,48,92,.045) !important;
+        font-weight: 650 !important;
+    }
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {
+        border-color: var(--coral) !important;
+        color: var(--coral) !important;
+        box-shadow: 0 6px 16px rgba(224,85,63,.12) !important;
+    }
+    button[kind="primary"] {
+        background: var(--coral) !important;
+        color: #FFFFFF !important;
+        border-color: var(--coral) !important;
     }
 
-    .business-card {
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid #E5E7EB;
-        background-color: #FFFFFF;
+    /* Inputs */
+    div[data-baseweb="select"] > div,
+    div[data-baseweb="input"] > div,
+    div[data-testid="stTextInput"] input,
+    textarea {
+        background: #FFFFFF !important;
+        color: var(--navy) !important;
+        border-color: #E7D8CC !important;
+        border-radius: 8px !important;
+    }
+    div[data-baseweb="select"] span { color: var(--navy) !important; }
+    div[data-testid="stFileUploader"] {
+        padding: 4px;
+        border-radius: 10px;
+        background: #FFFFFF;
+        border: 1px dashed #E2CFC2;
+    }
+    div[data-testid="stFileUploaderDropzone"] {
+        background: #FFFDFB !important;
+        border-color: #E8D8CC !important;
     }
 
+    /* Tabs */
+    button[data-baseweb="tab"] {
+        color: #6D6A66 !important;
+        font-weight: 600 !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: var(--navy) !important;
+    }
+    div[data-baseweb="tab-highlight"] { background: var(--coral) !important; }
+
+    /* Alerts, expanders, dataframes */
+    div[data-testid="stAlert"] {
+        border-radius: 10px;
+        border: 1px solid #E8DDD4;
+        background: #FFFFFF;
+    }
+    div[data-testid="stExpander"] {
+        border: 1px solid #EEE1D6 !important;
+        border-radius: 10px !important;
+        background: #FFFFFF !important;
+        overflow: hidden;
+    }
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #E9DED5;
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 5px 16px rgba(34,48,92,.04);
+    }
+    code { color: var(--coral) !important; }
+    a { color: var(--coral) !important; }
+
+    /* Dedicated dashboard */
+    .neon-dashboard-title {
+        font-size: 2.5rem;
+        font-weight: 800;
+        letter-spacing: -.035em;
+        color: var(--navy);
+    }
+    .neon-dashboard-subtitle {
+        color: #7C756D;
+        font-size: 13px;
+        margin-top: 4px;
+        margin-bottom: 14px;
+    }
+
+    ::-webkit-scrollbar { width: 9px; height: 9px; }
+    ::-webkit-scrollbar-track { background: #F2E8DF; }
+    ::-webkit-scrollbar-thumb { background: #D6C3B6; border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: #BEA89A; }
     </style>
     """,
     unsafe_allow_html=True
@@ -1264,15 +1709,32 @@ if "basic_data_explanation" not in st.session_state:
 # ==========================================================
 
 st.markdown(
-    '<div class="main-title">'
-    '📊 Automated Business Intelligence Platform'
-    '</div>',
+    """
+    <div class="ds-topbar">
+        <div class="ds-topbar-brand">
+            <div class="ds-logo">✦</div>
+            <span>DATA ANALYZER</span>
+        </div>
+        <div class="ds-topnav">
+            <span class="active">▦ Dashboard</span>
+            <span>▤ Reports</span>
+            <span>⚙ Settings</span>
+        </div>
+    </div>
+    <div style="padding:0 2px 2px;">
+        <div class="main-title">Interactive Business Intelligence</div>
+        <div class="main-subtitle">Explore your uploaded data through dashboards, insights, recommendations and management questions.</div>
+    </div>
+    <div class="hero-panel">
+        <div class="hero-kicker">AI-powered analytics workspace</div>
+        <div class="hero-title">Turn raw business data into a decision-ready dashboard.</div>
+        <div class="hero-copy">
+            Upload a CSV or Excel dataset and DATA ANALYZER automatically adapts its dashboard sheets,
+            colourful charts, statistics, business insights, recommendations, Ask Data questions and final report to the actual data.
+        </div>
+    </div>
+    """,
     unsafe_allow_html=True
-)
-
-st.write(
-    "Upload a dataset and automatically create dashboards, "
-    "analysis, domain research, insights and recommendations."
 )
 
 
@@ -1282,15 +1744,36 @@ st.write(
 
 with st.sidebar:
 
-    st.header("⚙️ Platform Controls")
+    st.markdown(
+        """
+        <div class="bi-brand">
+            <div class="bi-brand-name">◈ DATA ANALYZER</div>
+            <div class="bi-brand-subtitle">
+                Intelligent Business Analytics Command Center
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        '<div class="neon-section-card">'
+        '<div class="neon-section-label">Workspace</div>'
+        '<div class="neon-section-value">Upload & Configure</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
     uploaded_file = st.file_uploader(
-        "Upload CSV / Excel",
+        "📁 Upload CSV / Excel",
         type=[
             "csv",
             "xlsx",
             "xls"
-        ]
+        ],
+        help="Upload the dataset you want DATA ANALYZER to analyze."
     )
 
     sheet_count = st.selectbox(
@@ -1484,42 +1967,28 @@ def _render_interactive_dashboard_page(df, sheets):
     # ========================================================
     st.markdown(
         """
-        <style>
-        .copy-dashboard-title {
-            font-size: 2.1rem;
-            font-weight: 700;
-            margin-bottom: .2rem;
-        }
-        .copy-dashboard-subtitle {
-            color: #64748b;
-            margin-bottom: 1rem;
-        }
-        .copy-kpi-card {
-            padding: 1rem 1.1rem;
-            border: 1px solid #e2e8f0;
-            border-radius: 14px;
-            background: #ffffff;
-            box-shadow: 0 1px 4px rgba(15,23,42,.05);
-        }
-        </style>
+        <div class="neon-dashboard-title">✦ Analytics Dashboard</div>
+        <div class="neon-dashboard-subtitle">
+            Interactive dashboard with AI insights, advanced analytics and
+            Power BI-style sheet-level filtering.
+        </div>
+        <div class="hero-panel" style="margin-top:4px;">
+            <div class="hero-kicker">Live business dashboard</div>
+            <div class="hero-title" style="font-size:23px;">
+                Explore performance, patterns and management signals.
+            </div>
+            <div class="hero-copy">
+                Use slicers and chart selections to explore the uploaded dataset.
+                Every sheet uses the same analytical source and updates its
+                related charts when filters are applied.
+            </div>
+        </div>
         """,
         unsafe_allow_html=True,
     )
 
     st.markdown(
-        '<div class="copy-dashboard-title">📊 Interactive Business Dashboard</div>',
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        '<div class="copy-dashboard-subtitle">'
-        'Power BI-style sheet-level cross-filtering • '
-        'Click a chart value to filter the current sheet'
-        '</div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        "[← Back to Main Analysis](https://dataanalyzerproject-h29svk5hkuhn5b258b2nyr.streamlit.app/)"
+        "[← Back to Main Analysis](http://localhost:8501/)"
     )
 
     # ========================================================
@@ -1539,17 +2008,19 @@ def _render_interactive_dashboard_page(df, sheets):
     )
 
     k1, k2, k3, k4 = st.columns(4)
-    for col, label, value in [
-        (k1, "Total Records", f"{len(df):,}"),
-        (k2, "Dashboard Sheets", f"{len(sheets):,}"),
-        (k3, "Average Metric", average_metric),
-        (k4, "Dashboard Charts", f"{total_charts:,}"),
-    ]:
+    kpi_items = [
+        (k1, "Total Records", f"{len(df):,}", "#22D3EE", "#22D3EE20", "◉"),
+        (k2, "Dashboard Sheets", f"{len(sheets):,}", "#8B5CF6", "#8B5CF620", "✦"),
+        (k3, "Average Metric", average_metric, "#34D399", "#34D39920", "↗"),
+        (k4, "Dashboard Charts", f"{total_charts:,}", "#EC4899", "#EC489920", "◈"),
+    ]
+    for col, label, value, accent, glow, icon in kpi_items:
         with col:
             st.markdown(
-                f'<div class="copy-kpi-card">'
-                f'<div style="color:#64748b;font-size:.85rem">{label}</div>'
-                f'<div style="font-size:1.65rem;font-weight:700">{value}</div>'
+                f'<div class="neon-kpi" style="--accent:{accent};--glow:{glow};">'
+                f'<div class="neon-kpi-icon">{icon}</div>'
+                f'<div class="neon-kpi-label">{label}</div>'
+                f'<div class="neon-kpi-value">{value}</div>'
                 f'</div>',
                 unsafe_allow_html=True,
             )
@@ -1567,7 +2038,7 @@ def _render_interactive_dashboard_page(df, sheets):
 
     if not sheets:
         st.warning("No generated dashboard sheets are available.")
-        st.markdown("[← Open Main Streamlit Application](https://dataanalyzerproject-h29svk5hkuhn5b258b2nyr.streamlit.app/)")
+        st.markdown("[← Open Main Streamlit Application](http://localhost:8501/)")
         return
 
     # ========================================================
@@ -1580,7 +2051,13 @@ def _render_interactive_dashboard_page(df, sheets):
 
     for sheet_index, (tab, sheet) in enumerate(zip(tabs, sheets)):
         with tab:
-            st.subheader(f"📁 {sheet.get('name', 'Dashboard')}")
+            st.markdown(
+                f'<div class="neon-section-card">'
+                f'<div class="neon-section-label">ANALYTICAL SHEET</div>'
+                f'<div class="neon-section-value">📁 {sheet.get("name", "Dashboard")}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
             st.caption(
                 sheet.get(
                     "description",
@@ -1635,9 +2112,11 @@ def _render_interactive_dashboard_page(df, sheets):
                             category=chart.get("category"),
                             metric=chart.get("metric"),
                             chart_type=chart.get("chart_type", "Bar"),
-                            color=chart.get("color", "#2563EB"),
+                            color=chart.get("color", "#22D3EE"),
                             title=chart.get("title", "Business Chart")
                         )
+
+                        fig = _style_neon_figure(fig, chart)
 
                         selection_changed = _dashboard_chart(
                             fig,
@@ -1713,7 +2192,7 @@ if _requested_page == "dashboard":
             "Please return to the main page and upload a dataset first."
         )
         st.markdown(
-            "[← Open Main Streamlit Application](https://dataanalyzerproject-h29svk5hkuhn5b258b2nyr.streamlit.app/)"
+            "[← Open Main Streamlit Application](http://localhost:8501/)"
         )
         st.stop()
 
@@ -1897,10 +2376,55 @@ if uploaded_file:
 
 else:
 
-    st.info(
-        "👈 Upload your CSV or Excel file from the sidebar."
+    st.markdown(
+        """
+        <div class="hero-panel" style="margin-top:4px;">
+            <div class="hero-kicker">Workspace ready</div>
+            <div class="hero-title">Your analytics command center is ready.</div>
+            <div class="hero-copy">
+                Start by uploading your CSV or Excel file from the sidebar.
+                The platform will adapt its dashboard topics, charts, insights,
+                questions and recommendations to the actual structure of your data.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
     )
 
+    st.markdown("### ✦ What your workspace will generate")
+
+    f1, f2, f3, f4 = st.columns(4)
+
+    cards = [
+        (f1, "#22D3EE", "◉", "Interactive Dashboards",
+         "4–5 business sheets with 5 colourful charts per sheet."),
+        (f2, "#8B5CF6", "✦", "AI Business Insights",
+         "Signals, barriers, trends and management focus areas."),
+        (f3, "#EC4899", "◈", "Smart Ask Data",
+         "Professional questions generated from your actual data."),
+        (f4, "#FB923C", "↗", "Decision Report",
+         "Compact PDF report with insights and dashboard access."),
+    ]
+
+    for col, accent, icon, title, copy in cards:
+        with col:
+            st.markdown(
+                f"""
+                <div class="neon-kpi"
+                     style="--accent:{accent};--glow:{accent}22;">
+                    <div class="neon-kpi-icon">{icon}</div>
+                    <div class="neon-kpi-label">{title}</div>
+                    <div style="color:#9FB1D0;font-size:12px;line-height:1.55;margin-top:10px;">
+                        {copy}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    st.info("👈 Upload your CSV or Excel file from the sidebar to start the analysis.")
     st.stop()
 
 
@@ -2464,7 +2988,7 @@ with tabs[1]:
 
                         selected_chart["chart_type"] = "Bar"
 
-                        selected_chart["color"] = "#2563EB"
+                        selected_chart["color"] = "#22D3EE"
 
                         selected_chart["title"] = (
                             f"Business Chart "
@@ -2518,13 +3042,15 @@ with tabs[1]:
                         ),
                         color=chart.get(
                             "color",
-                            "#2563EB"
+                            "#22D3EE"
                         ),
                         title=chart.get(
                             "title",
                             "Business Chart"
                         )
                     )
+
+                    fig = _style_neon_figure(fig, chart)
 
                     st.plotly_chart(
                         fig,
@@ -4496,8 +5022,22 @@ with tabs[7]:
 
 st.divider()
 
-st.caption(
-    "Automated Business Intelligence Platform | "
-    "Data → Dashboard → Statistics → Insights → "
-    "Recommendations → AI Analysis → Report"
+st.markdown(
+    """
+    <div style="
+        text-align:center;
+        padding:16px 8px;
+        color:#617A9F;
+        font-size:11px;
+        letter-spacing:.04em;
+    ">
+        <span style="color:#22D3EE;">◆</span>
+        DATA ANALYZER
+        <span style="color:#8B5CF6;">•</span>
+        Automated Business Intelligence
+        <span style="color:#EC4899;">•</span>
+        Data → Dashboard → Insights → Decisions
+    </div>
+    """,
+    unsafe_allow_html=True
 )
