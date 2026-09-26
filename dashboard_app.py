@@ -30,10 +30,15 @@ def load_snapshot():
     with open(SNAPSHOT_PATH, "rb") as f:
         snapshot = pickle.load(f)
 
+<<<<<<< HEAD
     return (
         snapshot.get("df"),
         snapshot.get("sheets", [])
     )
+
+=======
+    return snapshot.get("df"), snapshot.get("sheets", [])
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
 
 df, sheets = load_snapshot()
@@ -56,6 +61,7 @@ st.caption(
 
 st.divider()
 
+<<<<<<< HEAD
 sheet_tabs = st.tabs([
     s.get(
         "name",
@@ -64,6 +70,16 @@ sheet_tabs = st.tabs([
     for i, s in enumerate(sheets)
 ])
 
+=======
+
+sheet_tabs = st.tabs(
+    [
+        s.get("name", f"Sheet {i + 1}")
+        for i, s in enumerate(sheets)
+    ]
+)
+
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
 for sheet_index, (sheet_tab, sheet) in enumerate(
     zip(sheet_tabs, sheets)
@@ -97,9 +113,13 @@ for sheet_index, (sheet_tab, sheet) in enumerate(
             sheet_index
         )
 
+<<<<<<< HEAD
         filter_col1, filter_col2 = st.columns(
             [5, 1]
         )
+=======
+        filter_col1, filter_col2 = st.columns([5, 1])
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
         with filter_col1:
 
@@ -107,22 +127,32 @@ for sheet_index, (sheet_tab, sheet) in enumerate(
 
                 st.info(
                     "🔎 Active dashboard filter: "
+<<<<<<< HEAD
                     + get_filter_summary(
                         sheet_filters
                     )
+=======
+                    + get_filter_summary(sheet_filters)
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
                 )
 
             else:
 
                 st.caption(
+<<<<<<< HEAD
                     "💡 Click a category in any chart "
                     "to filter the entire dashboard sheet."
+=======
+                    "💡 Click a category in any chart to filter "
+                    "the entire dashboard sheet."
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
                 )
 
         with filter_col2:
 
             if st.button(
                 "✖ Clear Filters",
+<<<<<<< HEAD
                 key=(
                     f"standalone_clear_filters_"
                     f"{sheet_index}"
@@ -131,6 +161,11 @@ for sheet_index, (sheet_tab, sheet) in enumerate(
                 disabled=not bool(
                     sheet_filters
                 )
+=======
+                key=f"standalone_clear_filters_{sheet_index}",
+                use_container_width=True,
+                disabled=not bool(sheet_filters)
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
             ):
 
                 clear_sheet_filters(
@@ -146,12 +181,17 @@ for sheet_index, (sheet_tab, sheet) in enumerate(
         )
 
         st.caption(
+<<<<<<< HEAD
             f"Showing {len(filtered_df):,} of "
             f"{len(df):,} records"
+=======
+            f"Showing {len(filtered_df):,} of {len(df):,} records"
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
         )
 
         columns = st.columns(2)
 
+<<<<<<< HEAD
         for display_index, chart in enumerate(
             charts
         ):
@@ -186,6 +226,34 @@ for sheet_index, (sheet_tab, sheet) in enumerate(
                         ),
                     )
 
+=======
+        for display_index, chart in enumerate(charts):
+
+            with columns[display_index % 2]:
+
+                try:
+
+                    category = chart.get("category")
+
+                    fig = create_chart(
+                        filtered_df,
+                        category=category,
+                        metric=chart.get("metric"),
+                        chart_type=chart.get(
+                            "chart_type",
+                            "Bar"
+                        ),
+                        color=chart.get(
+                            "color",
+                            "#2563EB"
+                        ),
+                        title=chart.get(
+                            "title",
+                            "Business Chart"
+                        ),
+                    )
+
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
                     add_selection_metadata(
                         fig,
                         category
@@ -203,12 +271,26 @@ for sheet_index, (sheet_tab, sheet) in enumerate(
                         selection_mode="points"
                     )
 
+<<<<<<< HEAD
+=======
+                    # IMPORTANT:
+                    # Pass the original dataframe so the filter
+                    # engine can convert the clicked Plotly value
+                    # to the correct dataframe datatype.
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
                     if capture_chart_selection(
                         st,
                         event,
                         category,
+<<<<<<< HEAD
                         sheet_index
                     ):
+=======
+                        sheet_index,
+                        df=df
+                    ):
+
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
                         st.rerun()
 
                 except Exception as error:
@@ -227,6 +309,10 @@ for sheet_index, (sheet_tab, sheet) in enumerate(
 st.divider()
 
 st.caption(
+<<<<<<< HEAD
     "Standalone Dashboard • Generated from the main "
     "Automated BI Platform"
+=======
+    "Standalone Dashboard • Generated from the main Automated BI Platform"
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 )

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """
 Tableau / Power BI style cross-filter engine.
 
@@ -9,6 +10,9 @@ Behavior:
 - Selecting a value from another chart adds another filter.
 - All charts are rebuilt from the filtered dataframe.
 """
+=======
+"""Power BI-style cross-filtering helpers for the Automated BI dashboard."""
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ from typing import Any
 import pandas as pd
 
 
+<<<<<<< HEAD
 # ============================================================
 # FILTER STATE
 # ============================================================
@@ -25,6 +30,13 @@ def ensure_filter_state(st, sheet_index: int) -> dict[str, Any]:
     """
     Get the independent filter dictionary for one dashboard sheet.
     """
+=======
+def ensure_filter_state(
+    st,
+    sheet_index: int
+) -> dict[str, Any]:
+    """Create and return the filter dictionary for one dashboard sheet."""
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
     if "dashboard_filters" not in st.session_state:
         st.session_state.dashboard_filters = {}
@@ -41,6 +53,7 @@ def clear_sheet_filters(
     st,
     sheet_index: int
 ) -> None:
+<<<<<<< HEAD
     """
     Clear filters for only the selected sheet.
     """
@@ -144,22 +157,215 @@ def _coerce_to_column_dtype(
     if (
         df is None
         or not column
+=======
+    """Clear all cross-filters for one dashboard sheet."""
+
+    if "dashboard_filters" in st.session_state:
+        st.session_state.dashboard_filters[sheet_index] = {}
+
+
+def apply_filters(
+    df: pd.DataFrame,
+    filters: dict[str, Any]
+) -> pd.DataFrame:
+    """
+    Apply all active filters to the dataframe.
+
+    Filters are combined using AND logic.
+    """
+
+    if df is None or df.empty or not filters:
+        return df
+
+    result = df.copy()
+
+    for column, value in filters.items():
+
+        if column not in result.columns:
+            continue
+
+        values = (
+            value
+            if isinstance(
+                value,
+                (list, tuple, set)
+            )
+            else [value]
+        )
+
+        values = [
+            v
+            for v in values
+            if v is not None
+        ]
+
+        if not values:
+            continue
+
+        non_null_values = []
+        wants_null = False
+
+        for value_item in values:
+
+            try:
+
+                if pd.isna(value_item):
+                    wants_null = True
+                else:
+                    non_null_values.append(
+                        value_item
+                    )
+
+            except Exception:
+
+                non_null_values.append(
+                    value_item
+                )
+
+        if non_null_values:
+
+            mask = result[column].isin(
+                non_null_values
+            )
+
+        else:
+
+            mask = pd.Series(
+                False,
+                index=result.index
+            )
+
+        if wants_null:
+
+            mask = (
+                mask
+                | result[column].isna()
+            )
+
+        result = result.loc[mask]
+
+    return result.copy()
+
+
+def _event_points(event) -> list[dict[str, Any]]:
+    """Safely extract Plotly selection points from a Streamlit event."""
+
+    if event is None:
+        return []
+
+    try:
+
+        selection = event.selection
+
+    except Exception:
+
+        try:
+            selection = event.get(
+                "selection",
+                {}
+            )
+
+        except Exception:
+
+            return []
+
+    if selection is None:
+        return []
+
+    try:
+
+        points = selection.points
+
+    except Exception:
+
+        try:
+            points = selection.get(
+                "points",
+                []
+            )
+
+        except Exception:
+
+            points = []
+
+    return list(points or [])
+
+
+def _point_value(
+    point: dict[str, Any]
+) -> Any:
+    """Get the most reliable category value from a Plotly point."""
+
+    customdata = point.get(
+        "customdata"
+    )
+
+    if isinstance(
+        customdata,
+        (list, tuple)
+    ):
+
+        if customdata:
+            return customdata[0]
+
+    elif customdata is not None:
+
+        return customdata
+
+    if point.get("label") is not None:
+        return point.get("label")
+
+    if point.get("x") is not None:
+        return point.get("x")
+
+    if point.get("y") is not None:
+        return point.get("y")
+
+    return None
+
+
+def _coerce_to_column_dtype(
+    df: pd.DataFrame | None,
+    column: str,
+    value: Any
+) -> Any:
+    """
+    Convert Plotly-selected values to the
+    datatype used by the dataframe column.
+    """
+
+    if (
+        df is None
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
         or column not in df.columns
         or value is None
     ):
         return value
 
+<<<<<<< HEAD
     if _is_missing(value):
         return value
+=======
+    try:
+
+        if pd.isna(value):
+            return value
+
+    except Exception:
+        pass
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
     series = df[column]
 
     try:
 
+<<<<<<< HEAD
         # -----------------------------
         # DATETIME
         # -----------------------------
 
+=======
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
         if pd.api.types.is_datetime64_any_dtype(
             series
         ):
@@ -172,10 +378,13 @@ def _coerce_to_column_dtype(
             if not pd.isna(converted):
                 return converted
 
+<<<<<<< HEAD
         # -----------------------------
         # NUMERIC
         # -----------------------------
 
+=======
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
         if pd.api.types.is_numeric_dtype(
             series
         ):
@@ -186,6 +395,7 @@ def _coerce_to_column_dtype(
             )
 
             if not pd.isna(converted):
+<<<<<<< HEAD
 
                 if pd.api.types.is_integer_dtype(
                     series
@@ -202,6 +412,10 @@ def _coerce_to_column_dtype(
         # BOOLEAN
         # -----------------------------
 
+=======
+                return converted
+
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
         if pd.api.types.is_bool_dtype(
             series
         ):
@@ -220,14 +434,22 @@ def _coerce_to_column_dtype(
                 if text in {
                     "true",
                     "yes",
+<<<<<<< HEAD
                     "1"
+=======
+                    "1",
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
                 }:
                     return True
 
                 if text in {
                     "false",
                     "no",
+<<<<<<< HEAD
                     "0"
+=======
+                    "0",
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
                 }:
                     return False
 
@@ -236,10 +458,15 @@ def _coerce_to_column_dtype(
 
     try:
         return value.item()
+<<<<<<< HEAD
+=======
+
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
     except Exception:
         return value
 
 
+<<<<<<< HEAD
 # ============================================================
 # APPLY ALL FILTERS
 # ============================================================
@@ -451,12 +678,37 @@ def _point_value(
 # ============================================================
 # CAPTURE CHART SELECTION
 # ============================================================
+=======
+def _values_equal(
+    first: Any,
+    second: Any
+) -> bool:
+    """Safely compare two filter values."""
+
+    try:
+
+        result = first == second
+
+        if isinstance(
+            result,
+            bool
+        ):
+            return result
+
+        return bool(result)
+
+    except Exception:
+
+        return False
+
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
 def capture_chart_selection(
     st,
     event,
     category: str | None,
     sheet_index: int,
+<<<<<<< HEAD
     df: pd.DataFrame | None = None,
     filter_column: str | None = None,
 ) -> bool:
@@ -494,10 +746,26 @@ def capture_chart_selection(
     points = _event_points(
         event
     )
+=======
+    df: pd.DataFrame | None = None
+) -> bool:
+    """
+    Store a selected chart category as a
+    sheet-level cross-filter.
+
+    Returns True only when the filter changed.
+    """
+
+    if not category:
+        return False
+
+    points = _event_points(event)
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
     if not points:
         return False
 
+<<<<<<< HEAD
     # We use the first selected point.
     point = points[0]
 
@@ -548,11 +816,16 @@ def capture_chart_selection(
 
     value = _point_value(
         point
+=======
+    value = _point_value(
+        points[0]
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
     )
 
     if value is None:
         return False
 
+<<<<<<< HEAD
     # --------------------------------------------------------
     # CONVERT VALUE
     # --------------------------------------------------------
@@ -567,12 +840,21 @@ def capture_chart_selection(
     # CURRENT FILTERS
     # --------------------------------------------------------
 
+=======
+    value = _coerce_to_column_dtype(
+        df,
+        category,
+        value
+    )
+
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
     filters = ensure_filter_state(
         st,
         sheet_index
     )
 
     old_value = filters.get(
+<<<<<<< HEAD
         selected_column
     )
 
@@ -582,11 +864,27 @@ def capture_chart_selection(
 
     # Clicking the same selected value again
     # removes that filter.
+=======
+        category
+    )
+
+    try:
+
+        if (
+            pd.isna(old_value)
+            and pd.isna(value)
+        ):
+            return False
+
+    except Exception:
+        pass
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
     if _values_equal(
         old_value,
         value
     ):
+<<<<<<< HEAD
 
         filters.pop(
             selected_column,
@@ -600,10 +898,16 @@ def capture_chart_selection(
     # ========================================================
 
     filters[selected_column] = value
+=======
+        return False
+
+    filters[category] = value
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
     return True
 
 
+<<<<<<< HEAD
 # ============================================================
 # FILTER SUMMARY
 # ============================================================
@@ -611,6 +915,12 @@ def capture_chart_selection(
 def get_filter_summary(
     filters: dict[str, Any]
 ) -> str:
+=======
+def get_filter_summary(
+    filters: dict[str, Any]
+) -> str:
+    """Create a readable dashboard filter summary."""
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
 
     if not filters:
         return "No filters selected"
@@ -619,15 +929,29 @@ def get_filter_summary(
 
     for column, value in filters.items():
 
+<<<<<<< HEAD
         if _is_missing(value):
             display_value = "Missing"
         else:
+=======
+        try:
+
+            if pd.isna(value):
+                display_value = "Missing"
+
+            else:
+                display_value = str(value)
+
+        except Exception:
+
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
             display_value = str(value)
 
         parts.append(
             f"{column}: {display_value}"
         )
 
+<<<<<<< HEAD
     return " • ".join(
         parts
     )
@@ -665,6 +989,26 @@ def add_selection_metadata(
     """
 
     if fig is None:
+=======
+    return " • ".join(parts)
+
+
+def add_selection_metadata(
+    fig,
+    category: str | None
+):
+    """
+    Add category metadata to Plotly traces.
+
+    This allows Streamlit to identify which
+    category the user clicked.
+    """
+
+    if (
+        fig is None
+        or not category
+    ):
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
         return fig
 
     for trace in fig.data:
@@ -677,6 +1021,7 @@ def add_selection_metadata(
                 ""
             )
 
+<<<<<<< HEAD
             orientation = getattr(
                 trace,
                 "orientation",
@@ -687,6 +1032,9 @@ def add_selection_metadata(
             # PIE
             # =================================================
 
+=======
+            # PIE CHART
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
             if trace_type == "pie":
 
                 labels = (
@@ -695,6 +1043,7 @@ def add_selection_metadata(
                     else []
                 )
 
+<<<<<<< HEAD
                 if category and labels:
 
                     trace.customdata = [
@@ -774,11 +1123,31 @@ def add_selection_metadata(
             else:
 
                 values = (
+=======
+                trace.customdata = [
+                    [label]
+                    for label in labels
+                ]
+
+                continue
+
+            # BAR / LINE / OTHER CHARTS
+            orientation = getattr(
+                trace,
+                "orientation",
+                None
+            )
+
+            if orientation == "h":
+
+                categories = (
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
                     list(trace.y)
                     if trace.y is not None
                     else []
                 )
 
+<<<<<<< HEAD
             if values:
 
                 trace.customdata = [
@@ -787,12 +1156,35 @@ def add_selection_metadata(
                         value
                     ]
                     for value in values
+=======
+            else:
+
+                categories = (
+                    list(trace.x)
+                    if trace.x is not None
+                    else []
+                )
+
+            if categories:
+
+                trace.customdata = [
+                    [value]
+                    for value in categories
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
                 ]
 
         except Exception:
 
+<<<<<<< HEAD
             # One unusual Plotly trace should never break
             # the entire dashboard.
             continue
 
     return fig
+=======
+            # The chart should still render even
+            # if a trace does not accept metadata.
+            continue
+
+    return fig
+>>>>>>> 3f38de2a889e96d62248baa9c073a7ba99a56572
