@@ -1030,23 +1030,14 @@ def _bi_fmt(value):
 # The palette is applied to generated charts so the dashboard is
 # colourful without changing the user's chart layout or interactions.
 DASHBOARD_PALETTE = [
-    "#22305C",  # navy
-    "#E0553F",  # coral
-    "#5FB57A",  # green
-    "#6F7FEF",  # soft indigo
-    "#F0B85A",  # warm amber
-    "#39B8D6",  # teal
-    "#9B7FEA",  # lavender
-    "#F276A0",  # rose
-    "#6CA9F2",  # soft blue
-    "#7CC9A4",  # mint
-    "#D58B6A",  # terracotta
-    "#8A93A6",  # slate
+    "#22D3EE", "#3B82F6", "#8B5CF6", "#EC4899", "#FB923C",
+    "#34D399", "#FBBF24", "#60A5FA", "#A78BFA", "#F472B6",
+    "#2DD4BF", "#FB7185"
 ]
 
 
 def _apply_dashboard_palette(sheets):
-    """Assign attractive pastel/dashboard colours while preserving chart order."""
+    """Assign attractive, different chart colours while preserving order."""
     for sheet_index, sheet in enumerate(sheets or []):
         for chart_index, chart in enumerate(sheet.get("charts", [])):
             chart["color"] = DASHBOARD_PALETTE[
@@ -1056,94 +1047,76 @@ def _apply_dashboard_palette(sheets):
 
 
 def _style_neon_figure(fig, chart=None):
-    """Apply the requested clean navy + coral + pastel dashboard theme to Plotly charts."""
+    """Apply the supplied reference's midnight-blue/neon visual language to Plotly charts."""
     try:
         fig.update_layout(
             paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="#FFFFFF",
+            plot_bgcolor="rgba(7,18,40,0.72)",
             font=dict(
                 family="Inter, Segoe UI, sans-serif",
-                color="#22305C",
+                color="#DCEBFF",
                 size=12,
             ),
             title=dict(
-                font=dict(color="#22305C", size=17),
+                font=dict(
+                    color="#F6FAFF",
+                    size=17,
+                ),
                 x=0.02,
                 xanchor="left",
             ),
-            margin=dict(l=44, r=20, t=58, b=42),
+            margin=dict(l=42, r=24, t=62, b=44),
             hoverlabel=dict(
-                bgcolor="#22305C",
-                bordercolor="#E0553F",
-                font=dict(color="#FFFFFF", size=12),
+                bgcolor="#0A1730",
+                bordercolor="#2B5B91",
+                font=dict(color="#F7FAFF", size=12),
             ),
             legend=dict(
-                font=dict(color="#475569", size=11),
+                font=dict(color="#AFC3DF", size=11),
                 bgcolor="rgba(0,0,0,0)",
             ),
             xaxis=dict(
-                color="#475569",
-                gridcolor="#F0E6DC",
-                linecolor="#D9D0C8",
-                zerolinecolor="#E8DED6",
-                title_font=dict(color="#667085"),
+                color="#90A9CA",
+                gridcolor="rgba(55,91,145,.28)",
+                linecolor="rgba(77,113,169,.35)",
+                zerolinecolor="rgba(77,113,169,.25)",
+                title_font=dict(color="#8EA9CA"),
             ),
             yaxis=dict(
-                color="#475569",
-                gridcolor="#F0E6DC",
-                linecolor="#D9D0C8",
-                zerolinecolor="#E8DED6",
-                title_font=dict(color="#667085"),
+                color="#90A9CA",
+                gridcolor="rgba(55,91,145,.28)",
+                linecolor="rgba(77,113,169,.35)",
+                zerolinecolor="rgba(77,113,169,.25)",
+                title_font=dict(color="#8EA9CA"),
             ),
         )
 
-        # Match the reference's soft multi-colour chart treatment.
+        # Give pie/donut charts the same multi-neon visual language as the reference.
         if chart and str(chart.get("chart_type", "")).lower() == "pie":
-            pastel = [
-                "#22305C", "#E0553F", "#5FB57A", "#6F7FEF",
-                "#F0B85A", "#39B8D6", "#9B7FEA", "#F276A0"
+            neon = [
+                "#22D3EE", "#8B5CF6", "#EC4899", "#FB923C",
+                "#34D399", "#3B82F6", "#FBBF24", "#F472B6"
             ]
             for trace in fig.data:
-                try:
-                    trace.marker.colors = pastel
-                except Exception:
-                    pass
+                if hasattr(trace, "marker") and trace.marker is not None:
+                    try:
+                        trace.marker.colors = neon
+                    except Exception:
+                        pass
 
+        # Slight glow-like line treatment.
         for trace in fig.data:
-            trace_type = str(getattr(trace, "type", "")).lower()
-            mode = str(getattr(trace, "mode", "")).lower()
             try:
-                if trace_type == "bar":
-                    count = len(trace.x) if trace.x is not None else len(trace.y)
-                    trace.marker.color = [
-                        DASHBOARD_PALETTE[i % len(DASHBOARD_PALETTE)]
-                        for i in range(max(count, 1))
-                    ]
-                    trace.marker.line = dict(color="#FFFFFF", width=1)
-                elif trace_type == "scatter" and "lines" in mode:
-                    trace.line.color = (chart or {}).get("color", "#22305C")
+                if getattr(trace, "mode", None) and "lines" in str(trace.mode):
                     trace.line.width = 3
-                elif trace_type in ("scatter", "scattergl") and "markers" in mode:
-                    trace.marker.size = 8
-                    trace.marker.color = (chart or {}).get("color", "#22305C")
-                    trace.marker.line = dict(color="#FFFFFF", width=1)
-                elif trace_type == "pie":
-                    trace.marker.line = dict(color="#FFFFFF", width=2)
-                else:
-                    try:
-                        trace.marker.color = (chart or {}).get("color", "#22305C")
-                    except Exception:
-                        pass
-                    try:
-                        trace.line.color = (chart or {}).get("color", "#22305C")
-                    except Exception:
-                        pass
             except Exception:
                 pass
+
     except Exception:
         pass
 
     return fig
+
 
 def build_business_insights(df, sheets=None):
     """Generate insights only from fields that actually exist in the uploaded data."""
@@ -1301,25 +1274,11 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    :root {
-        --navy: #22305C;
-        --coral: #E0553F;
-        --green: #5FB57A;
-        --amber: #F0B85A;
-        --teal: #39B8D6;
-        --lavender: #8C7AE6;
-        --bg: #FBF6F1;
-        --surface: #FFFFFF;
-        --surface-soft: #F8F1EB;
-        --border: #EEE1D6;
-        --text: #22305C;
-        --muted: #7C756D;
-    }
 
-    .stApp {
-        background: var(--bg) !important;
-        color: var(--text) !important;
-    }
+    /* ======================================================
+       REMOVE STREAMLIT DEFAULT TOP BAR / WHITE SPACE
+       Keep the custom DATA ANALYZER canvas continuous.
+       ====================================================== */
 
     header[data-testid="stHeader"],
     .stApp > header {
@@ -1329,195 +1288,482 @@ st.markdown(
         border: 0 !important;
         box-shadow: none !important;
     }
-    header[data-testid="stHeader"] * { visibility: hidden !important; }
-    [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"] {
+
+    header[data-testid="stHeader"] * {
+        visibility: hidden !important;
+    }
+
+    [data-testid="stToolbar"] {
         display: none !important;
     }
 
-    div[data-testid="stAppViewContainer"],
+    [data-testid="stDecoration"] {
+        display: none !important;
+    }
+
+    [data-testid="stStatusWidget"] {
+        display: none !important;
+    }
+
+    div[data-testid="stAppViewContainer"] {
+        background: transparent !important;
+    }
+
     div[data-testid="stAppViewContainer"] > section.main {
-        background: var(--bg) !important;
+        background: transparent !important;
     }
 
     .main .block-container {
-        max-width: 100% !important;
-        padding-top: 0.4rem !important;
-        padding-bottom: 2.5rem !important;
+        padding-top: 0.35rem !important;
     }
 
-    /* Main top navigation / app bar */
-    .ds-topbar {
-        background: var(--navy);
-        border-radius: 10px;
-        padding: 12px 18px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 18px;
-        box-shadow: 0 8px 22px rgba(34,48,92,.14);
+    /* ======================================================
+       DATA ANALYZER — NEON ANALYTICS / AI COMMAND CENTER
+       Visual direction based on the supplied reference image:
+       midnight blue + electric cyan + violet + magenta + amber.
+       ====================================================== */
+
+    :root {
+        --bg: #050A18;
+        --bg2: #08132A;
+        --panel: #0B1730;
+        --panel2: #101F40;
+        --panel3: #152852;
+        --border: #243A67;
+        --cyan: #22D3EE;
+        --blue: #3B82F6;
+        --violet: #8B5CF6;
+        --magenta: #EC4899;
+        --pink: #F472B6;
+        --green: #34D399;
+        --amber: #FBBF24;
+        --orange: #FB923C;
+        --red: #FB7185;
+        --text: #F7FAFF;
+        --muted: #9FB1D0;
     }
-    .ds-topbar-brand {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        color: #FFFFFF;
-        font-size: 18px;
-        font-weight: 700;
+
+    .stApp {
+        background:
+            radial-gradient(circle at 12% 5%, rgba(34,211,238,.14), transparent 25%),
+            radial-gradient(circle at 90% 8%, rgba(139,92,246,.17), transparent 27%),
+            radial-gradient(circle at 82% 90%, rgba(236,72,153,.10), transparent 28%),
+            radial-gradient(circle at 8% 88%, rgba(59,130,246,.10), transparent 25%),
+            linear-gradient(135deg, #030712 0%, #071225 42%, #081A35 100%);
+        color: var(--text);
     }
-    .ds-logo {
-        width: 34px;
-        height: 34px;
-        border-radius: 9px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: var(--coral);
-        color: #FFFFFF;
-        font-size: 17px;
-        font-weight: 900;
-    }
-    .ds-topnav {
-        display: flex;
-        align-items: center;
-        gap: 26px;
-        color: #B9C2D9;
-        font-size: 13px;
-    }
-    .ds-topnav .active {
-        color: #FFFFFF;
-        font-weight: 600;
-        position: relative;
-    }
-    .ds-topnav .active::after {
+
+    .stApp::before {
         content: "";
-        position: absolute;
-        left: 0;
-        right: 0;
-        bottom: -12px;
-        height: 2px;
-        background: var(--coral);
-        border-radius: 2px;
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: .20;
+        background-image:
+            linear-gradient(rgba(34,211,238,.06) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(34,211,238,.06) 1px, transparent 1px);
+        background-size: 44px 44px;
+        mask-image: linear-gradient(to bottom, black, transparent 85%);
+        z-index: 0;
     }
+
+    .main .block-container {
+        position: relative;
+        z-index: 1;
+        max-width: 1500px;
+        padding-top: 1.3rem;
+        padding-bottom: 3rem;
+    }
+
+    /* ---------- Header ---------- */
 
     .main-title {
-        font-size: 36px;
-        font-weight: 750;
-        color: var(--navy);
-        letter-spacing: -.03em;
-        margin-top: 4px;
+        font-size: 3.1rem;
+        line-height: 1.05;
+        font-weight: 900;
+        letter-spacing: -.045em;
+        background: linear-gradient(
+            90deg,
+            #FFFFFF 0%,
+            #B9F7FF 28%,
+            #55E7FF 52%,
+            #A78BFA 78%,
+            #F9A8D4 100%
+        );
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        text-shadow: 0 0 30px rgba(34,211,238,.18);
     }
+
     .main-subtitle {
-        margin-top: 5px;
-        color: #7C756D;
+        margin-top: 7px;
+        color: #82DFF5;
         font-size: 14px;
+        letter-spacing: .035em;
+    }
+
+    .bi-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 14px;
+        border-radius: 999px;
+        color: #B9F7FF;
+        font-size: 12px;
+        font-weight: 700;
+        background: rgba(15,31,64,.82);
+        border: 1px solid rgba(34,211,238,.32);
+        box-shadow: 0 0 24px rgba(34,211,238,.08);
     }
 
     .hero-panel {
         position: relative;
         overflow: hidden;
-        margin: 14px 0 18px;
-        padding: 22px 24px;
-        border-radius: 14px;
-        border: 1px solid #E8DDD3;
-        background: linear-gradient(105deg, #F1ECFF 0%, #FFFFFF 54%, #FBE8EE 100%);
-        box-shadow: 0 8px 22px rgba(34,48,92,.06);
-    }
-    .hero-kicker {
-        color: var(--coral);
-        font-size: 11px;
-        font-weight: 750;
-        text-transform: uppercase;
-        letter-spacing: .08em;
-    }
-    .hero-title {
-        color: var(--navy);
-        font-size: 25px;
-        font-weight: 750;
-        line-height: 1.2;
-        margin-top: 5px;
-    }
-    .hero-copy {
-        color: #596275;
-        font-size: 13px;
-        line-height: 1.55;
-        max-width: 930px;
-        margin-top: 8px;
+        margin: 18px 0 22px;
+        padding: 26px 30px;
+        border-radius: 22px;
+        border: 1px solid rgba(73,216,255,.36);
+        background:
+            radial-gradient(circle at 82% 30%, rgba(139,92,246,.26), transparent 30%),
+            radial-gradient(circle at 18% 85%, rgba(34,211,238,.14), transparent 32%),
+            linear-gradient(135deg, rgba(10,28,59,.96), rgba(14,30,67,.92));
+        box-shadow:
+            0 20px 60px rgba(0,0,0,.32),
+            inset 0 1px 0 rgba(255,255,255,.05),
+            0 0 40px rgba(34,211,238,.06);
     }
 
-    /* Sidebar */
-    section[data-testid="stSidebar"] {
-        background: #FBF7F2 !important;
-        border-right: 1px solid #EEE1D6 !important;
+    .hero-panel::after {
+        content: "";
+        position: absolute;
+        width: 260px;
+        height: 260px;
+        right: -80px;
+        top: -120px;
+        border-radius: 50%;
+        background: rgba(236,72,153,.13);
+        filter: blur(55px);
     }
-    section[data-testid="stSidebar"] > div {
-        background: #FBF7F2 !important;
-    }
-    .bi-brand {
-        padding: 8px 4px 16px;
-        border-bottom: 1px solid #EDE4DC;
-        margin-bottom: 14px;
-    }
-    .bi-brand-name {
-        color: var(--navy);
-        font-size: 19px;
-        font-weight: 750;
-    }
-    .bi-brand-subtitle {
-        color: #897F75;
+
+    .hero-kicker {
+        color: #63E6FF;
         font-size: 11px;
-        margin-top: 3px;
-        line-height: 1.4;
-    }
-    .neon-section-card {
-        padding: 13px 15px;
-        border-radius: 11px;
-        background: linear-gradient(135deg, #FFFFFF, #FFF5EF);
-        border: 1px solid #EEE1D6;
-        box-shadow: 0 5px 15px rgba(34,48,92,.04);
-    }
-    .neon-section-label {
-        color: var(--coral);
-        font-size: 10px;
         font-weight: 800;
         text-transform: uppercase;
-        letter-spacing: .10em;
-    }
-    .neon-section-value {
-        color: var(--navy);
-        font-size: 15px;
-        font-weight: 700;
-        margin-top: 4px;
+        letter-spacing: .16em;
+        margin-bottom: 8px;
     }
 
-    /* Cards and metrics */
+    .hero-title {
+        color: #F8FBFF;
+        font-size: 28px;
+        line-height: 1.18;
+        font-weight: 850;
+        margin-bottom: 9px;
+    }
+
+    .hero-copy {
+        max-width: 920px;
+        color: #AFC0DD;
+        font-size: 14px;
+        line-height: 1.7;
+    }
+
+    /* ---------- Sidebar ---------- */
+
+    section[data-testid="stSidebar"] {
+        background:
+            radial-gradient(circle at 18% 10%, rgba(34,211,238,.12), transparent 28%),
+            radial-gradient(circle at 90% 75%, rgba(139,92,246,.16), transparent 30%),
+            linear-gradient(180deg, #050D1F 0%, #07152D 48%, #091A35 100%);
+        border-right: 1px solid rgba(58,101,168,.42);
+    }
+
+    section[data-testid="stSidebar"] > div {
+        background: transparent;
+    }
+
+    .bi-brand {
+        padding: 8px 2px 14px;
+    }
+
+    .bi-brand-name {
+        font-size: 21px;
+        font-weight: 900;
+        letter-spacing: .02em;
+        background: linear-gradient(90deg, #F8FAFF, #61E7FF, #A78BFA);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+    }
+
+    .bi-brand-subtitle {
+        margin-top: 4px;
+        color: #7FA4D5;
+        font-size: 11px;
+        line-height: 1.5;
+    }
+
+    section[data-testid="stSidebar"] hr {
+        border-color: rgba(66,96,147,.35);
+    }
+
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] .stMarkdown p {
+        color: #BFD0EA !important;
+    }
+
+    /* ---------- General typography ---------- */
+
+    h1, h2, h3, h4, h5, h6 {
+        color: #F4F8FF !important;
+        letter-spacing: -.02em;
+    }
+
+    .section-title {
+        font-size: 28px;
+        font-weight: 850;
+        background: linear-gradient(90deg, #FFFFFF, #60E8FF, #A78BFA);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        margin-top: 16px;
+        margin-bottom: 6px;
+    }
+
+    .stMarkdown, .stText, p, li {
+        color: #B9C8E0;
+    }
+
+    .stCaption {
+        color: #7891B5 !important;
+    }
+
+    /* ---------- Tabs ---------- */
+
+    button[data-baseweb="tab"] {
+        color: #8299BB !important;
+        font-weight: 700 !important;
+        border-radius: 10px 10px 0 0 !important;
+    }
+
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: #72E9FF !important;
+        background: rgba(34,211,238,.06) !important;
+    }
+
+    div[data-baseweb="tab-highlight"] {
+        background: linear-gradient(
+            90deg,
+            #22D3EE,
+            #3B82F6,
+            #8B5CF6,
+            #EC4899
+        ) !important;
+        height: 3px !important;
+        box-shadow: 0 0 14px rgba(34,211,238,.45);
+    }
+
+    /* ---------- Cards / containers ---------- */
+
     div[data-testid="stMetric"] {
-        background: #FFFFFF !important;
-        border: 1px solid #EEE1D6 !important;
-        border-radius: 10px !important;
-        padding: 14px 16px !important;
-        box-shadow: 0 5px 15px rgba(34,48,92,.045) !important;
+        position: relative;
+        overflow: hidden;
+        padding: 16px 17px;
+        min-height: 118px;
+        border-radius: 16px;
+        border: 1px solid rgba(77,111,168,.48);
+        background:
+            linear-gradient(145deg, rgba(17,34,69,.96), rgba(9,22,48,.96));
+        box-shadow:
+            0 12px 30px rgba(0,0,0,.20),
+            inset 0 1px 0 rgba(255,255,255,.045);
     }
+
+    div[data-testid="stMetric"]::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 3px;
+        background: linear-gradient(
+            90deg,
+            #22D3EE,
+            #3B82F6,
+            #8B5CF6,
+            #EC4899
+        );
+    }
+
     div[data-testid="stMetric"] label {
-        color: #8A7A6D !important;
-        font-weight: 500 !important;
-    }
-    div[data-testid="stMetricValue"] {
-        color: var(--navy) !important;
-        font-size: 1.9rem !important;
+        color: #87A5CA !important;
         font-weight: 700 !important;
     }
-    div[data-testid="stMetricDelta"] { color: var(--green) !important; }
+
+    div[data-testid="stMetricValue"] {
+        color: #F7FAFF !important;
+        font-size: 1.85rem !important;
+        font-weight: 850 !important;
+        text-shadow: 0 0 20px rgba(34,211,238,.10);
+    }
+
+    div[data-testid="stMetricDelta"] {
+        color: #5EEAD4 !important;
+    }
+
+    .business-card {
+        padding: 20px;
+        border-radius: 16px;
+        border: 1px solid rgba(75,108,163,.45);
+        background: linear-gradient(145deg, #0D1D3B, #0A1730);
+        box-shadow: 0 12px 30px rgba(0,0,0,.20);
+    }
+
+    /* ---------- Buttons ---------- */
+
+    .stButton > button,
+    .stDownloadButton > button {
+        border-radius: 10px !important;
+        border: 1px solid rgba(62,116,193,.62) !important;
+        color: #D9F8FF !important;
+        background: linear-gradient(135deg, #102B55, #183C72) !important;
+        box-shadow: 0 5px 18px rgba(0,0,0,.20) !important;
+        font-weight: 750 !important;
+        transition: all .18s ease;
+    }
+
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {
+        border-color: #22D3EE !important;
+        color: #FFFFFF !important;
+        box-shadow:
+            0 0 22px rgba(34,211,238,.18),
+            0 8px 24px rgba(0,0,0,.24) !important;
+        transform: translateY(-1px);
+    }
+
+    button[kind="primary"] {
+        background: linear-gradient(
+            100deg,
+            #2563EB,
+            #7C3AED,
+            #DB2777
+        ) !important;
+        border-color: rgba(139,92,246,.75) !important;
+    }
+
+    /* ---------- Inputs ---------- */
+
+    div[data-baseweb="select"] > div,
+    div[data-baseweb="input"] > div,
+    div[data-testid="stTextInput"] input,
+    textarea {
+        background: #0B1934 !important;
+        color: #EAF4FF !important;
+        border-color: #2C4776 !important;
+    }
+
+    div[data-baseweb="select"] span {
+        color: #D7E5F7 !important;
+    }
+
+    div[data-testid="stFileUploader"] {
+        padding: 4px;
+        border-radius: 14px;
+        background: rgba(9,25,52,.72);
+        border: 1px dashed rgba(34,211,238,.55);
+    }
+
+    div[data-testid="stFileUploaderDropzone"] {
+        background: linear-gradient(135deg, #0A1B37, #10264B) !important;
+        border-color: rgba(67,153,225,.55) !important;
+    }
+
+    /* ---------- Expanders ---------- */
+
+    div[data-testid="stExpander"] {
+        border: 1px solid rgba(65,100,157,.45) !important;
+        border-radius: 14px !important;
+        background: rgba(9,24,51,.78) !important;
+        overflow: hidden;
+    }
+
+    /* ---------- Alerts ---------- */
+
+    div[data-testid="stAlert"] {
+        border-radius: 13px;
+        border: 1px solid rgba(67,118,181,.40);
+        background: rgba(12,31,64,.80);
+    }
+
+    /* ---------- Dataframes ---------- */
+
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #263F6B;
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 10px 28px rgba(0,0,0,.20);
+    }
+
+    /* ---------- Code / links ---------- */
+
+    code {
+        color: #67E8F9 !important;
+    }
+
+    a {
+        color: #67E8F9 !important;
+    }
+
+    /* ---------- Slider / checkbox / radio ---------- */
+
+    div[data-testid="stSlider"] [role="slider"] {
+        background: #22D3EE !important;
+    }
+
+    /* ---------- Dedicated dashboard ---------- */
+
+    .neon-dashboard-title {
+        font-size: 2.65rem;
+        font-weight: 900;
+        letter-spacing: -.04em;
+        background: linear-gradient(
+            90deg,
+            #FFFFFF,
+            #7DEBFF 35%,
+            #8B5CF6 68%,
+            #F472B6
+        );
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+        text-shadow: 0 0 35px rgba(34,211,238,.16);
+    }
+
+    .neon-dashboard-subtitle {
+        color: #8FB7DD;
+        font-size: 13px;
+        margin-top: 4px;
+        margin-bottom: 18px;
+    }
 
     .neon-kpi {
         position: relative;
-        min-height: 102px;
-        padding: 16px 17px;
-        border-radius: 11px;
+        min-height: 125px;
+        padding: 18px 19px;
+        border-radius: 17px;
         overflow: hidden;
-        border: 1px solid #EEE1D6;
-        background: #FFFFFF;
-        box-shadow: 0 6px 18px rgba(34,48,92,.055);
+        border: 1px solid rgba(74,115,177,.48);
+        background:
+            radial-gradient(circle at 100% 0%, var(--glow), transparent 42%),
+            linear-gradient(145deg, #102349, #09172F);
+        box-shadow:
+            0 14px 36px rgba(0,0,0,.25),
+            inset 0 1px 0 rgba(255,255,255,.05);
     }
+
     .neon-kpi::before {
         content: "";
         position: absolute;
@@ -1526,146 +1772,84 @@ st.markdown(
         height: 4px;
         width: 100%;
         background: var(--accent);
+        box-shadow: 0 0 18px var(--accent);
     }
+
     .neon-kpi-label {
-        color: #8A7A6D;
+        color: #8EA8CA;
         font-size: 11px;
-        font-weight: 650;
-        letter-spacing: .02em;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .12em;
     }
+
     .neon-kpi-value {
-        color: var(--navy);
-        font-size: 28px;
-        line-height: 1.05;
-        font-weight: 750;
-        margin-top: 9px;
+        color: #F8FBFF;
+        font-size: 29px;
+        line-height: 1.1;
+        font-weight: 900;
+        margin-top: 11px;
     }
+
     .neon-kpi-icon {
         position: absolute;
         right: 14px;
-        top: 13px;
-        width: 36px;
-        height: 36px;
+        top: 14px;
+        width: 38px;
+        height: 38px;
         border-radius: 11px;
         display: flex;
         align-items: center;
         justify-content: center;
         color: var(--accent);
-        background: color-mix(in srgb, var(--accent) 12%, white);
-        border: 1px solid color-mix(in srgb, var(--accent) 18%, white);
+        background: rgba(255,255,255,.055);
+        border: 1px solid rgba(255,255,255,.08);
+        box-shadow: 0 0 18px var(--glow);
     }
 
-    .business-card {
-        padding: 18px;
-        border-radius: 12px;
-        border: 1px solid #EEE1D6;
-        background: #FFFFFF;
-        box-shadow: 0 6px 18px rgba(34,48,92,.045);
+    .neon-section-card {
+        padding: 15px 17px;
+        border-radius: 14px;
+        border: 1px solid rgba(72,107,166,.42);
+        background: linear-gradient(145deg, rgba(14,31,63,.95), rgba(8,20,43,.96));
+        box-shadow: 0 12px 30px rgba(0,0,0,.20);
     }
 
-    .section-title {
-        font-size: 26px;
-        font-weight: 750;
-        color: var(--navy);
-        margin-top: 12px;
-        margin-bottom: 8px;
-    }
-    h1,h2,h3,h4 { color: var(--navy) !important; }
-    p,span,label,div { }
-
-    /* Streamlit buttons */
-    .stButton > button,
-    .stDownloadButton > button {
-        border-radius: 8px !important;
-        border: 1px solid #E7D8CC !important;
-        color: var(--navy) !important;
-        background: #FFFFFF !important;
-        box-shadow: 0 4px 12px rgba(34,48,92,.045) !important;
-        font-weight: 650 !important;
-    }
-    .stButton > button:hover,
-    .stDownloadButton > button:hover {
-        border-color: var(--coral) !important;
-        color: var(--coral) !important;
-        box-shadow: 0 6px 16px rgba(224,85,63,.12) !important;
-    }
-    button[kind="primary"] {
-        background: var(--coral) !important;
-        color: #FFFFFF !important;
-        border-color: var(--coral) !important;
-    }
-
-    /* Inputs */
-    div[data-baseweb="select"] > div,
-    div[data-baseweb="input"] > div,
-    div[data-testid="stTextInput"] input,
-    textarea {
-        background: #FFFFFF !important;
-        color: var(--navy) !important;
-        border-color: #E7D8CC !important;
-        border-radius: 8px !important;
-    }
-    div[data-baseweb="select"] span { color: var(--navy) !important; }
-    div[data-testid="stFileUploader"] {
-        padding: 4px;
-        border-radius: 10px;
-        background: #FFFFFF;
-        border: 1px dashed #E2CFC2;
-    }
-    div[data-testid="stFileUploaderDropzone"] {
-        background: #FFFDFB !important;
-        border-color: #E8D8CC !important;
-    }
-
-    /* Tabs */
-    button[data-baseweb="tab"] {
-        color: #6D6A66 !important;
-        font-weight: 600 !important;
-    }
-    button[data-baseweb="tab"][aria-selected="true"] {
-        color: var(--navy) !important;
-    }
-    div[data-baseweb="tab-highlight"] { background: var(--coral) !important; }
-
-    /* Alerts, expanders, dataframes */
-    div[data-testid="stAlert"] {
-        border-radius: 10px;
-        border: 1px solid #E8DDD4;
-        background: #FFFFFF;
-    }
-    div[data-testid="stExpander"] {
-        border: 1px solid #EEE1D6 !important;
-        border-radius: 10px !important;
-        background: #FFFFFF !important;
-        overflow: hidden;
-    }
-    div[data-testid="stDataFrame"] {
-        border: 1px solid #E9DED5;
-        border-radius: 10px;
-        overflow: hidden;
-        box-shadow: 0 5px 16px rgba(34,48,92,.04);
-    }
-    code { color: var(--coral) !important; }
-    a { color: var(--coral) !important; }
-
-    /* Dedicated dashboard */
-    .neon-dashboard-title {
-        font-size: 2.5rem;
+    .neon-section-label {
+        color: #60E7FF;
+        font-size: 11px;
         font-weight: 800;
-        letter-spacing: -.035em;
-        color: var(--navy);
-    }
-    .neon-dashboard-subtitle {
-        color: #7C756D;
-        font-size: 13px;
-        margin-top: 4px;
-        margin-bottom: 14px;
+        text-transform: uppercase;
+        letter-spacing: .12em;
     }
 
-    ::-webkit-scrollbar { width: 9px; height: 9px; }
-    ::-webkit-scrollbar-track { background: #F2E8DF; }
-    ::-webkit-scrollbar-thumb { background: #D6C3B6; border-radius: 10px; }
-    ::-webkit-scrollbar-thumb:hover { background: #BEA89A; }
+    .neon-section-value {
+        color: #F8FBFF;
+        font-size: 17px;
+        font-weight: 800;
+        margin-top: 5px;
+    }
+
+    /* ---------- Scrollbars ---------- */
+
+    ::-webkit-scrollbar {
+        width: 9px;
+        height: 9px;
+    }
+
+    ::-webkit-scrollbar-track {
+        background: #050B18;
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: #203A67;
+        border-radius: 10px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+        background: #315B9A;
+    }
+
     </style>
     """,
     unsafe_allow_html=True
@@ -1710,27 +1894,20 @@ if "basic_data_explanation" not in st.session_state:
 
 st.markdown(
     """
-    <div class="ds-topbar">
-        <div class="ds-topbar-brand">
-            <div class="ds-logo">✦</div>
-            <span>DATA ANALYZER</span>
+    <div style="padding:4px 0 0;">
+        <div class="main-title">📊 DATA ANALYZER</div>
+        <div class="main-subtitle">
+            Interactive Business Intelligence • AI Insights • Advanced Analytics
         </div>
-        <div class="ds-topnav">
-            <span class="active">▦ Dashboard</span>
-            <span>▤ Reports</span>
-            <span>⚙ Settings</span>
-        </div>
-    </div>
-    <div style="padding:0 2px 2px;">
-        <div class="main-title">Interactive Business Intelligence</div>
-        <div class="main-subtitle">Explore your uploaded data through dashboards, insights, recommendations and management questions.</div>
     </div>
     <div class="hero-panel">
         <div class="hero-kicker">AI-powered analytics workspace</div>
-        <div class="hero-title">Turn raw business data into a decision-ready dashboard.</div>
+        <div class="hero-title">Turn raw business data into a decision-ready command center.</div>
         <div class="hero-copy">
-            Upload a CSV or Excel dataset and DATA ANALYZER automatically adapts its dashboard sheets,
-            colourful charts, statistics, business insights, recommendations, Ask Data questions and final report to the actual data.
+            Upload a CSV or Excel dataset and DATA ANALYZER automatically builds
+            business-focused sheets, colourful interactive charts, statistics,
+            domain research, management insights, recommendations, professional
+            Ask Data questions and a compact final report.
         </div>
     </div>
     """,
@@ -1967,7 +2144,7 @@ def _render_interactive_dashboard_page(df, sheets):
     # ========================================================
     st.markdown(
         """
-        <div class="neon-dashboard-title">✦ Analytics Dashboard</div>
+        <div class="neon-dashboard-title">◈ Analytics Command Center</div>
         <div class="neon-dashboard-subtitle">
             Interactive dashboard with AI insights, advanced analytics and
             Power BI-style sheet-level filtering.
@@ -2145,7 +2322,7 @@ def _render_interactive_dashboard_page(df, sheets):
 
     st.markdown("### 📌 Dashboard Page Link")
     st.code(
-        "https://dataanalyzerproject-h29svk5hkuhn5b258b2nyr.streamlit.app/?page=dashboard",
+        "http://localhost:8501/?page=dashboard",
         language="text"
     )
     st.caption(
@@ -4852,7 +5029,7 @@ with tabs[7]:
             # This is a page inside THIS Streamlit application.
             # It does not start dashboard_app.py and does not use
             # port 8502.
-            dashboard_url = "https://dataanalyzerproject-h29svk5hkuhn5b258b2nyr.streamlit.app/?page=dashboard"
+            dashboard_url = "http://localhost:8501/?page=dashboard"
 
             # ==================================================
             # 3. BUILD THE COMPLETE ASK DATA QUESTION SET
