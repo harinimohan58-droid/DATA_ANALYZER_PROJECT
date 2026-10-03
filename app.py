@@ -11,14 +11,10 @@ import socket
 import subprocess
 import pickle
 import time
-import hashlib
-import json
-import io
-import itertools
 
 import streamlit as st
 import pandas as pd
-# Optional legacy module: not required because this app uses its built-in Ask Data engine.
+from modules.user_demand_engine import render_user_demand_section
 from modules.data_loader import (
     load_file,
     convert_date_columns,
@@ -71,318 +67,6 @@ from modules.ai_analyst import (
 from modules.report_generator import (
     generate_pdf
 )
-
-
-# ==========================================================
-# AUTHENTICATION / ACCESS CONTROL
-# ==========================================================
-
-def _auth_is_configured():
-    """Return True only when the Streamlit OIDC settings are available."""
-    try:
-        auth = st.secrets.get("auth", {})
-        required = (
-            "redirect_uri",
-            "cookie_secret",
-            "client_id",
-            "client_secret",
-            "server_metadata_url",
-        )
-        return isinstance(auth, dict) and all(auth.get(key) for key in required)
-    except Exception:
-        return False
-
-
-def _allowed_email_set():
-    """Read the allow-list used after OIDC authentication."""
-    try:
-        access = st.secrets.get("access", {})
-        values = access.get("allowed_emails", []) if isinstance(access, dict) else []
-        if isinstance(values, str):
-            values = [values]
-        return {
-            str(value).strip().lower()
-            for value in values
-            if str(value).strip()
-        }
-    except Exception:
-        return set()
-
-
-def _current_authenticated_user():
-    """Return the verified current OIDC user, or None when not logged in."""
-    try:
-        is_logged_in = bool(getattr(st.user, "is_logged_in", False))
-        if not is_logged_in:
-            return None
-
-        email = str(getattr(st.user, "email", "") or "").strip().lower()
-        name = str(getattr(st.user, "name", "") or "User").strip()
-        email_verified = getattr(st.user, "email_verified", True)
-
-        if not email:
-            return None
-
-        if isinstance(email_verified, str):
-            email_verified = email_verified.strip().lower() == "true"
-
-        return {
-            "email": email,
-            "name": name or "User",
-            "email_verified": bool(email_verified),
-        }
-    except Exception:
-        return None
-
-
-def _render_login_gate():
-    """Stop the application until the user has authenticated and is allowed."""
-    st.markdown(
-        """
-        <div style="max-width:760px;margin:8vh auto 0;padding:36px 40px;
-             background:#FFFFFF;border:1px solid #EEE1D6;border-radius:18px;
-             box-shadow:0 14px 40px rgba(34,48,92,.10);">
-            <div style="font-size:13px;font-weight:800;letter-spacing:.12em;
-                        text-transform:uppercase;color:#E0553F;">PRIVATE WORKSPACE</div>
-            <div style="font-size:34px;font-weight:800;color:#22305C;margin-top:8px;">
-                DATA ANALYZER
-            </div>
-            <div style="font-size:15px;color:#7C756D;margin-top:8px;line-height:1.55;">
-                Enter your email ID below, then continue with your authorized Google account.
-                Only email addresses in the configured access list can enter the application.
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    left, center, right = st.columns([1, 2, 1])
-    with center:
-        st.markdown("### 🔐 Sign in")
-        st.text_input(
-            "Email ID",
-            placeholder="your-email@gmail.com",
-            key="login_email_hint",
-            help="This identifies the account you intend to use. Access is granted only after the identity provider verifies the email.",
-        )
-        st.button(
-            "Continue with Google",
-            on_click=st.login,
-            use_container_width=True,
-        )
-        st.caption(
-            "Your typed email is not used as authentication by itself. "
-            "The authenticated email returned by Google is checked against the allow-list."
-        )
-    st.stop()
-
-
-def _enforce_authentication():
-    """Authenticate first, then authorize by verified email allow-list."""
-    if not _auth_is_configured():
-        st.error(
-            "Authentication is not configured. Add the [auth] and [access] settings "
-            "from the provided Streamlit Cloud secrets template before using this app."
-        )
-        st.stop()
-
-    user = _current_authenticated_user()
-    if user is None:
-        _render_login_gate()
-
-    allowed = _allowed_email_set()
-    if not user["email_verified"]:
-        st.error("Your email address could not be verified by the identity provider.")
-        st.button("Log out", on_click=st.logout)
-        st.stop()
-
-    if not allowed:
-        st.error(
-            "No authorized email addresses are configured. Add at least one email to "
-            "[access].allowed_emails in Streamlit Secrets."
-        )
-        st.button("Log out", on_click=st.logout)
-        st.stop()
-
-    if user["email"] not in allowed:
-        st.error(
-            f"Access denied for {user['email']}. This email is not in the authorized user list."
-        )
-        st.button("Log out", on_click=st.logout)
-        st.stop()
-
-    st.session_state.current_user_email = user["email"]
-    st.session_state.current_user_name = user["name"]
-    return user
-
-
-# ==========================================================
-# ROBUST MULTI-FILE LOADING / CORRELATION
-# ==========================================================
-
-class _NamedBytesIO(io.BytesIO):
-    """BytesIO that retains the original filename for the existing loader."""
-    def __init__(self, data, name):
-        super().__init__(data)
-        self.name = name
-
-
-def _read_uploaded_dataframe(uploaded_file):
-    """Read a Streamlit UploadedFile safely from fresh bytes on every call."""
-    if uploaded_file is None:
-        raise ValueError("No file was provided.")
-
-    raw = uploaded_file.getvalue()
-    if not raw:
-        raise ValueError(f"'{getattr(uploaded_file, 'name', 'file')}' is empty.")
-
-    buffer = _NamedBytesIO(raw, getattr(uploaded_file, "name", "uploaded.csv"))
-    df = load_file(buffer)
-    return convert_date_columns(df)
-
-
-def _multi_file_signature(uploaded_files, sheet_count):
-    """Build a stable signature for uploaded files and dashboard setting."""
-    return tuple(
-        (
-            str(getattr(f, "name", "")),
-            int(getattr(f, "size", 0) or 0),
-            hashlib.md5(f.getvalue()).hexdigest(),
-        )
-        for f in (uploaded_files or [])
-    ) + (int(sheet_count),)
-
-
-def _build_multi_file_analysis(uploaded_files):
-    """Load every file once and create pairwise profile comparisons."""
-    frames = []
-    errors = []
-
-    for uploaded_file in uploaded_files or []:
-        name = str(getattr(uploaded_file, "name", "Unnamed file"))
-        try:
-            frame = _read_uploaded_dataframe(uploaded_file)
-            if frame.empty or frame.shape[1] == 0:
-                raise ValueError("The file contains no usable columns or rows.")
-            frames.append({"name": name, "df": frame})
-        except Exception as exc:
-            errors.append({"name": name, "error": str(exc)})
-
-    pair_rows = []
-    for left, right in itertools.combinations(frames, 2):
-        left_df = left["df"]
-        right_df = right["df"]
-        common_columns = [c for c in left_df.columns if c in set(right_df.columns)]
-        common_numeric = [
-            c for c in common_columns
-            if pd.api.types.is_numeric_dtype(left_df[c])
-            and pd.api.types.is_numeric_dtype(right_df[c])
-        ]
-
-        correlations = []
-        for col in common_numeric:
-            a = pd.to_numeric(left_df[col], errors="coerce").dropna()
-            b = pd.to_numeric(right_df[col], errors="coerce").dropna()
-            if not a.empty and not b.empty:
-                correlations.append(
-                    {
-                        "column": col,
-                        "left_mean": float(a.mean()),
-                        "right_mean": float(b.mean()),
-                    }
-                )
-
-        profile_corr = None
-        if len(correlations) >= 2:
-            aligned = pd.DataFrame(correlations)
-            profile_corr = aligned["left_mean"].corr(aligned["right_mean"])
-            if pd.isna(profile_corr):
-                profile_corr = None
-            else:
-                profile_corr = float(profile_corr)
-
-        pair_rows.append(
-            {
-                "File A": left["name"],
-                "File B": right["name"],
-                "Common Columns": len(common_columns),
-                "Common Numeric Columns": len(common_numeric),
-                "Profile Correlation": (
-                    round(profile_corr, 3) if profile_corr is not None else "N/A"
-                ),
-                "Comparable Fields": ", ".join(map(str, common_numeric[:8])) or "None",
-            }
-        )
-
-    compatible_schema = bool(frames) and all(
-        list(frame["df"].columns) == list(frames[0]["df"].columns)
-        for frame in frames
-    )
-
-    combined_df = None
-    if frames and compatible_schema:
-        combined_df = pd.concat(
-            [item["df"] for item in frames],
-            ignore_index=True,
-        )
-
-    return {
-        "frames": frames,
-        "errors": errors,
-        "pair_rows": pair_rows,
-        "pair_count": len(frames) * (len(frames) - 1) // 2,
-        "file_count": len(frames),
-        "compatible_schema": compatible_schema,
-        "combined_df": combined_df,
-    }
-
-
-def _render_multi_file_analysis(analysis):
-    """Display non-destructive multi-file comparison results."""
-    if not analysis:
-        return
-
-    frames = analysis.get("frames", [])
-    pair_rows = analysis.get("pair_rows", [])
-    errors = analysis.get("errors", [])
-
-    if len(frames) <= 1 and not errors:
-        return
-
-    st.markdown("## 🔗 Multi-File Analysis")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Files Loaded", analysis.get("file_count", 0))
-    m2.metric("Automatic Pairwise Comparisons", analysis.get("pair_count", 0))
-    m3.metric(
-        "Shared Schema",
-        "Yes" if analysis.get("compatible_schema") else "No / Mixed",
-    )
-
-    summary_rows = [
-        {
-            "File": item["name"],
-            "Rows": len(item["df"]),
-            "Columns": len(item["df"].columns),
-            "Numeric Columns": len(item["df"].select_dtypes(include="number").columns),
-            "Status": "Loaded",
-        }
-        for item in frames
-    ]
-    if summary_rows:
-        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
-
-    if pair_rows:
-        st.markdown("### Pairwise Correlation / Comparison")
-        st.dataframe(pd.DataFrame(pair_rows), use_container_width=True, hide_index=True)
-
-    if errors:
-        st.warning("Some uploaded files could not be processed:")
-        st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
-
-
-# ==========================================================
-# AUTHENTICATION GATE
-# ==========================================================
 
 # ==========================================================
 # PROFESSIONAL DATA-DRIVEN BUSINESS QUESTION GENERATOR
@@ -1609,8 +1293,6 @@ st.set_page_config(
     layout="wide"
 )
 
-_enforce_authentication()
-
 
 # ==========================================================
 # CUSTOM CSS
@@ -2021,27 +1703,6 @@ if "research_sources" not in st.session_state:
 if "basic_data_explanation" not in st.session_state:
     st.session_state.basic_data_explanation = None
 
-if "pdf_questions" not in st.session_state:
-    st.session_state.pdf_questions = None
-
-if "report_cache_signature" not in st.session_state:
-    st.session_state.report_cache_signature = None
-
-if "report_cache_path" not in st.session_state:
-    st.session_state.report_cache_path = None
-
-if "uploaded_files_analysis" not in st.session_state:
-    st.session_state.uploaded_files_analysis = None
-
-if "uploaded_files_key" not in st.session_state:
-    st.session_state.uploaded_files_key = None
-
-if "current_user_email" not in st.session_state:
-    st.session_state.current_user_email = None
-
-if "current_user_name" not in st.session_state:
-    st.session_state.current_user_name = None
-
 
 # ==========================================================
 # HEADER
@@ -2105,27 +1766,15 @@ with st.sidebar:
 
     st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
-    uploaded_files = st.file_uploader(
-        "📁 Upload CSV / Excel Files",
+    uploaded_file = st.file_uploader(
+        "📁 Upload CSV / Excel",
         type=[
             "csv",
             "xlsx",
             "xls"
         ],
-        accept_multiple_files=True,
-        help="Upload one or more CSV/Excel files. Each file is loaded independently, then compatible files are combined for the existing dashboard model."
+        help="Upload the dataset you want DATA ANALYZER to analyze."
     )
-
-    file_count_for_sidebar = len(uploaded_files or [])
-    if file_count_for_sidebar:
-        pair_count_for_sidebar = file_count_for_sidebar * (file_count_for_sidebar - 1) // 2
-        st.success(f"📂 {file_count_for_sidebar} file(s) selected")
-        st.caption(f"Automatic pairwise comparisons: {pair_count_for_sidebar}")
-
-    st.markdown("### 🔐 Current Login")
-    st.write(f"**Name:** {st.session_state.get('current_user_name', 'User')}")
-    st.write(f"**Email:** {st.session_state.get('current_user_email', 'Unavailable')}")
-    st.button("🚪 Log out", on_click=st.logout, use_container_width=True)
 
     sheet_count = st.selectbox(
         "Number of Dashboard Sheets",
@@ -2559,42 +2208,31 @@ if _requested_page == "dashboard":
 # LOAD DATA
 # ==========================================================
 
-if uploaded_files:
+if uploaded_file:
 
-    current_data_key = _multi_file_signature(
-        uploaded_files,
-        sheet_count,
+    current_data_key = (
+        uploaded_file.name,
+        getattr(
+            uploaded_file,
+            "size",
+            None
+        ),
+        sheet_count
     )
 
-    if st.session_state.uploaded_files_key != current_data_key:
+    if st.session_state.data_key != current_data_key:
 
         try:
 
-            multi_analysis = _build_multi_file_analysis(uploaded_files)
+            df = load_file(
+                uploaded_file
+            )
 
-            if not multi_analysis["frames"]:
-                first_error = (
-                    multi_analysis["errors"][0]["error"]
-                    if multi_analysis["errors"]
-                    else "No usable files were loaded."
-                )
-                raise ValueError(first_error)
-
-            st.session_state.uploaded_files_analysis = multi_analysis
-
-            # Preserve the existing dashboard/model by using a combined dataframe
-            # when all uploaded files have the same schema. With mixed schemas,
-            # the first valid file remains the primary dashboard dataset while
-            # every file is still available in the multi-file comparison layer.
-            if multi_analysis["combined_df"] is not None:
-                df = convert_date_columns(multi_analysis["combined_df"])
-            else:
-                df = multi_analysis["frames"][0]["df"].copy()
+            df = convert_date_columns(
+                df
+            )
 
             st.session_state.df = df
-            st.session_state.pdf_questions = None
-            st.session_state.report_cache_signature = None
-            st.session_state.report_cache_path = None
 
             st.session_state.sheets = (
                 generate_sheet_templates(
@@ -2724,30 +2362,19 @@ if uploaded_files:
 
                 st.session_state.research_sources = []
 
-            st.session_state.data_key = current_data_key
-            st.session_state.uploaded_files_key = current_data_key
+            st.session_state.data_key = (
+                current_data_key
+            )
 
         except Exception as e:
 
-            st.session_state.df = None
-            st.session_state.sheets = []
-            st.session_state.insights = pd.DataFrame()
-            st.session_state.recommendations = []
-            st.session_state.uploaded_files_analysis = None
             st.error(
-                f"Unable to process uploaded files: {e}"
+                f"Unable to process file: {e}"
             )
+
             st.stop()
 
-    # Show the comparison layer without changing the old dashboard model.
-    _render_multi_file_analysis(
-        st.session_state.get("uploaded_files_analysis")
-    )
-
 else:
-
-    st.session_state.uploaded_files_key = None
-    st.session_state.uploaded_files_analysis = None
 
     st.markdown(
         """
@@ -2779,20 +2406,55 @@ else:
          "Compact PDF report with insights and dashboard access."),
     ]
 
-    for col, color, icon, title, copy in cards:
+    for col, accent, icon, title, copy in cards:
         with col:
             st.markdown(
                 f"""
-                <div style=\"border:1px solid #EEE1D6;border-radius:14px;padding:18px;
-                             background:#FFFFFF;box-shadow:0 7px 20px rgba(34,48,92,.05);
-                             height:170px;\">
-                    <div style=\"font-size:24px;color:{color};font-weight:800;\">{icon}</div>
-                    <div style=\"font-size:16px;font-weight:750;color:#22305C;margin-top:8px;\">{title}</div>
-                    <div style=\"font-size:12px;line-height:1.5;color:#7C756D;margin-top:7px;\">{copy}</div>
+                <div class="neon-kpi"
+                     style="--accent:{accent};--glow:{accent}22;">
+                    <div class="neon-kpi-icon">{icon}</div>
+                    <div class="neon-kpi-label">{title}</div>
+                    <div style="color:#9FB1D0;font-size:12px;line-height:1.55;margin-top:10px;">
+                        {copy}
+                    </div>
                 </div>
                 """,
-                unsafe_allow_html=True,
+                unsafe_allow_html=True
             )
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+
+    st.info("👈 Upload your CSV or Excel file from the sidebar to start the analysis.")
+    st.stop()
+
+
+# ==========================================================
+# DATA INFORMATION / MAIN NAVIGATION
+# ==========================================================
+
+df = st.session_state.df
+
+column_types = detect_column_types(
+    df
+)
+
+kpis = calculate_kpis(
+    df
+)
+
+tabs = st.tabs(
+    [
+        "🏢 Overview",
+        "📊 Dashboard Builder",
+        "📈 Statistics",
+        "🚨 Business Insights",
+        "🔎 Domain Research",
+        "💡 Recommendations",
+        "🤖 Ask Data",
+        "📄 Final Report"
+    ]
+)
+
 
 # ==========================================================
 # OVERVIEW
@@ -5088,69 +4750,6 @@ with tabs[6]:
 
 
 # ==========================================================
-# FAST REPORT CACHE HELPERS
-# ==========================================================
-
-def _fast_dataframe_signature(dataframe):
-    """Create a stable, content-aware signature for report caching."""
-    if dataframe is None:
-        return "no-data"
-
-    h = hashlib.sha256()
-    h.update(str(dataframe.shape).encode("utf-8"))
-    h.update(json.dumps([str(c) for c in dataframe.columns]).encode("utf-8"))
-    h.update(json.dumps([str(t) for t in dataframe.dtypes]).encode("utf-8"))
-    try:
-        h.update(pd.util.hash_pandas_object(dataframe, index=True).values.tobytes())
-    except Exception:
-        h.update(dataframe.to_csv(index=True).encode("utf-8", errors="ignore"))
-    return h.hexdigest()[:24]
-
-
-def _fast_json_signature(payload):
-    """Hash JSON-compatible report configuration/content."""
-    try:
-        raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
-    except Exception:
-        raw = repr(payload)
-    return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:24]
-
-
-def _build_report_cache_signature(dataframe, sheets, questions, dashboard_url):
-    """Identify a PDF uniquely so an identical second click can reuse it."""
-    sheet_payload = []
-    for sheet in sheets or []:
-        charts = []
-        for chart in sheet.get("charts", []) or []:
-            charts.append({
-                "category": chart.get("category"),
-                "metric": chart.get("metric"),
-                "chart_type": chart.get("chart_type", "Bar"),
-                "color": chart.get("color", "#22D3EE"),
-                "title": chart.get("title", "Business Chart"),
-                "position": chart.get("position", 999),
-            })
-        sheet_payload.append({
-            "name": sheet.get("name"),
-            "description": sheet.get("description"),
-            "charts": charts,
-        })
-
-    return _fast_json_signature({
-        "data": _fast_dataframe_signature(dataframe),
-        "sheets": sheet_payload,
-        "questions": questions or [],
-        "insights": st.session_state.get("insights"),
-        "recommendations": st.session_state.get("recommendations", []),
-        "research_result": st.session_state.get("research_result"),
-        "research_sources": st.session_state.get("research_sources", []),
-        "basic_data_explanation": st.session_state.get("basic_data_explanation"),
-        "real_user_result": st.session_state.get("real_user_result"),
-        "dashboard_url": dashboard_url,
-    })
-
-
-# ==========================================================
 # FINAL REPORT
 # ==========================================================
 
@@ -5256,134 +4855,114 @@ with tabs[7]:
             dashboard_url = "https://dataanalyzerproject-h29svk5hkuhn5b258b2nyr.streamlit.app/?page=dashboard"
 
             # ==================================================
-            # 3. REUSE CACHED ASK DATA RESULTS WHEN POSSIBLE
+            # 3. BUILD THE COMPLETE ASK DATA QUESTION SET
             # ==================================================
-            # The old version recalculated every generated question on every
-            # PDF click. That made the report page wait before PDF rendering
-            # even started. We now calculate the question answers only once
-            # per dataset/question set and keep them in session state.
-            cached_questions = st.session_state.get("pdf_questions")
+            # Ask Data displays the questions generated from the current
+            # dataset.  The PDF must contain that SAME complete list, and
+            # every question that can be calculated should carry its
+            # calculated answer into the report.
+            pdf_questions = []
+            seen_pdf_questions = set()
 
-            if isinstance(cached_questions, list):
-                pdf_questions = cached_questions
-            else:
-                pdf_questions = []
-                seen_pdf_questions = set()
+            for question in generate_data_questions(df):
+                question_text = re.sub(
+                    r"\s+",
+                    " ",
+                    str(question)
+                ).strip()
 
-                for question in generate_data_questions(df):
-                    question_text = re.sub(
-                        r"\s+",
-                        " ",
-                        str(question)
-                    ).strip()
+                if not question_text:
+                    continue
 
-                    if not question_text:
-                        continue
+                question_key = question_text.lower()
+                if question_key in seen_pdf_questions:
+                    continue
+                seen_pdf_questions.add(question_key)
 
-                    question_key = question_text.lower()
-                    if question_key in seen_pdf_questions:
-                        continue
-                    seen_pdf_questions.add(question_key)
+                try:
+                    answer_result = _answer_user_request(
+                        df,
+                        question_text,
+                        None
+                    )
+                except Exception as question_error:
+                    answer_result = {
+                        "mode": "analysis",
+                        "title": "Answer could not be calculated",
+                        "answer": "The question could not be reliably calculated from the uploaded data.",
+                        "evidence": str(question_error),
+                        "table": None,
+                        "note": "The question is retained in the PDF because it is part of the Ask Data question set."
+                    }
 
-                    try:
-                        answer_result = _answer_user_request(
-                            df,
-                            question_text,
-                            None
-                        )
-                    except Exception as question_error:
-                        answer_result = {
-                            "mode": "analysis",
-                            "title": "Answer could not be calculated",
-                            "answer": "The question could not be reliably calculated from the uploaded data.",
-                            "evidence": str(question_error),
-                            "table": None,
-                            "note": "The question is retained in the PDF because it is part of the Ask Data question set."
-                        }
+                pdf_questions.append({
+                    "question": question_text,
+                    "answer": (
+                        answer_result.get("answer", "")
+                        if isinstance(answer_result, dict)
+                        else str(answer_result or "")
+                    ),
+                    "evidence": (
+                        answer_result.get("evidence", "")
+                        if isinstance(answer_result, dict)
+                        else ""
+                    ),
+                    "note": (
+                        answer_result.get("note", "")
+                        if isinstance(answer_result, dict)
+                        else ""
+                    ),
+                    "answerable": bool(
+                        isinstance(answer_result, dict)
+                        and answer_result.get("answer")
+                        and "could not identify a reliable calculation"
+                        not in str(answer_result.get("answer", "")).lower()
+                    ),
+                })
 
-                    pdf_questions.append({
-                        "question": question_text,
-                        "answer": (
-                            answer_result.get("answer", "")
-                            if isinstance(answer_result, dict)
-                            else str(answer_result or "")
-                        ),
-                        "evidence": (
-                            answer_result.get("evidence", "")
-                            if isinstance(answer_result, dict)
-                            else ""
-                        ),
-                        "note": (
-                            answer_result.get("note", "")
-                            if isinstance(answer_result, dict)
-                            else ""
-                        ),
-                        "answerable": bool(
-                            isinstance(answer_result, dict)
-                            and answer_result.get("answer")
-                            and "could not identify a reliable calculation"
-                            not in str(answer_result.get("answer", "")).lower()
-                        ),
-                    })
-
-                st.session_state.pdf_questions = pdf_questions
+            # Keep the same complete question/answer set available to the
+            # report generator without changing the Ask Data page layout.
+            st.session_state.pdf_questions = pdf_questions
 
             # ==================================================
             # 4. GENERATE PDF WITH AUTOMATIC DASHBOARD URL
             # ==================================================
 
-            # ==================================================
-            # 4. REUSE AN IDENTICAL ALREADY-GENERATED PDF
-            # ==================================================
-            # If the data, dashboard definitions, questions and report
-            # content have not changed, there is no reason to render the
-            # same 20+ charts again.
-            report_signature = _build_report_cache_signature(
+            generate_pdf(
+
+                str(pdf_path),
+
                 df,
+
+                kpis,
+
                 st.session_state.sheets,
+
+                st.session_state.insights,
+
+                st.session_state.recommendations,
+
                 pdf_questions,
-                dashboard_url,
+
+                st.session_state.get(
+                    "research_result"
+                ),
+
+                st.session_state.get(
+                    "research_sources",
+                    []
+                ),
+
+                st.session_state.get(
+                    "basic_data_explanation"
+                ),
+
+                st.session_state.get(
+                    "real_user_result"
+                ),
+
+                dashboard_url
             )
-
-            cache_meta_path = reports_dir / "report_cache_signature.json"
-            cached_signature = None
-            try:
-                if cache_meta_path.exists():
-                    cached_signature = json.loads(
-                        cache_meta_path.read_text(encoding="utf-8")
-                    ).get("signature")
-            except Exception:
-                cached_signature = None
-
-            pdf_is_ready = pdf_path.exists() and pdf_path.stat().st_size > 0
-
-            if not (pdf_is_ready and cached_signature == report_signature):
-                generate_pdf(
-                    str(pdf_path),
-                    df,
-                    kpis,
-                    st.session_state.sheets,
-                    st.session_state.insights,
-                    st.session_state.recommendations,
-                    pdf_questions,
-                    st.session_state.get("research_result"),
-                    st.session_state.get("research_sources", []),
-                    st.session_state.get("basic_data_explanation"),
-                    st.session_state.get("real_user_result"),
-                    dashboard_url,
-                )
-
-                cache_meta_path.write_text(
-                    json.dumps({
-                        "signature": report_signature,
-                        "pdf": str(pdf_path.name),
-                    }, indent=2),
-                    encoding="utf-8",
-                )
-
-            st.session_state.report_cache_signature = report_signature
-            st.session_state.report_cache_path = str(pdf_path)
-
 
             # ==================================================
             # 4. DOWNLOAD PDF
@@ -5407,14 +4986,10 @@ with tabs[7]:
                     mime="application/pdf"
                 )
 
-            if pdf_is_ready and cached_signature == report_signature:
-                st.success(
-                    "Final report is ready. The cached PDF was reused, so no chart re-rendering was needed."
-                )
-            else:
-                st.success(
-                    "Final report generated successfully. The dashboard URL was detected automatically."
-                )
+            st.success(
+                "Final report generated successfully. "
+                "The dashboard URL was detected automatically."
+            )
 
             # ==================================================
             # 5. SHOW AUTOMATIC DASHBOARD LINK
