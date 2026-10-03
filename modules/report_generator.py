@@ -275,7 +275,7 @@ def _chart_signature(chart):
     ).hexdigest()[:16]
 
 
-def _render_dashboard_panel(df, sheet, sheet_index, output_dir, dataset_sig=None):
+def _render_dashboard_panel(df, sheet, sheet_index, output_dir):
     """Render the exact Streamlit charts, reusing PNGs already rendered for this dataset."""
     charts = sorted(
         sheet.get("charts", []),
@@ -292,8 +292,7 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir, dataset_sig=None
     canvas_w = cols * tile_w + (cols + 1) * gap
     canvas_h = header_h + rows * tile_h + (rows + 1) * gap
 
-    if dataset_sig is None:
-        dataset_sig = _dataset_signature(df)
+    dataset_sig = _dataset_signature(df)
     panel_sig = hashlib.sha256(
         json.dumps(
             [(_chart_signature(c)) for c in charts],
@@ -363,7 +362,7 @@ def _render_dashboard_panel(df, sheet, sheet_index, output_dir, dataset_sig=None
         y = header_h + gap + (idx // cols) * (tile_h + gap)
         canvas.paste(tile, (x, y))
 
-    canvas.save(out_path, compress_level=6)
+    canvas.save(out_path, quality=90)
     return out_path
 
 
@@ -465,112 +464,6 @@ def _research_source_lines(research_sources):
     return lines
 
 
-
-# ============================================================
-# SELECTABLE REPORT SECTIONS
-# ============================================================
-
-DEFAULT_REPORT_SECTIONS = [
-    "Executive Overview",
-    "Complete Dashboard",
-    "Statistical Analysis",
-    "Business Insights",
-    "Domain Research",
-    "Management Focus Questions",
-    "Recommendations & Development Opportunities",
-    "Ask Data / User Analysis",
-    "Multi-File Correlation",
-    "Data Quality & Final Takeaway",
-]
-
-
-def _report_wants(report_sections, name):
-    if report_sections is None:
-        return True
-    selected = {str(x).strip().lower() for x in report_sections if str(x).strip()}
-    return str(name).strip().lower() in selected
-
-
-def _append_multi_file_report_section(story, multi_file_analysis, styles):
-    if not multi_file_analysis:
-        story.append(Paragraph("No multi-file analysis was available.", styles["Normal"]))
-        return
-
-    file_count = int(multi_file_analysis.get("file_count", 0))
-    pair_count = int(multi_file_analysis.get("pairwise_file_comparisons", 0))
-
-    story.append(Paragraph(
-        f"The report contains analysis for <b>{file_count}</b> uploaded files and "
-        f"<b>{pair_count}</b> pairwise file comparisons.",
-        styles["Normal"],
-    ))
-    story.append(Spacer(1, 8))
-
-    file_rows = [["File", "Rows", "Columns", "Numeric Fields", "Missing Cells"]]
-    for item in multi_file_analysis.get("files", []):
-        file_rows.append([
-            safe(item.get("file_name", "")),
-            safe(item.get("rows", 0)),
-            safe(item.get("columns", 0)),
-            safe(len(item.get("numeric_columns", []))),
-            safe(item.get("missing_cells", 0)),
-        ])
-    if len(file_rows) > 1:
-        add_table(
-            story,
-            file_rows,
-            widths=[62 * mm, 24 * mm, 24 * mm, 30 * mm, 30 * mm],
-            font_size=6.8,
-        )
-
-    story.append(Paragraph("Pairwise File Correlations", styles["Subsection"]))
-    pair_rows = [["File 1", "File 2", "Common Numeric", "Top Correlation", "Value"]]
-    for item in multi_file_analysis.get("pairwise_comparisons", []):
-        pair = item.get("top_correlation_pair")
-        pair_rows.append([
-            safe(item.get("file_1", "")),
-            safe(item.get("file_2", "")),
-            safe(item.get("common_numeric_count", 0)),
-            " ↔ ".join(map(str, pair)) if pair else "Not enough common numeric fields",
-            fmt_num(item.get("top_correlation_value")) if item.get("top_correlation_value") is not None else "—",
-        ])
-    if len(pair_rows) > 1:
-        add_table(
-            story,
-            pair_rows,
-            widths=[45 * mm, 45 * mm, 28 * mm, 42 * mm, 18 * mm],
-            font_size=6.2,
-        )
-
-    common = multi_file_analysis.get("common_numeric_columns", [])
-    story.append(Paragraph(
-        "<b>Common numeric fields:</b> " + (", ".join(pretty_column(x) for x in common[:30]) if common else "None"),
-        styles["Small"],
-    ))
-
-    pooled = multi_file_analysis.get("pooled_correlation")
-    if pooled is not None:
-        try:
-            corr = pooled if isinstance(pooled, pd.DataFrame) else pd.DataFrame(pooled)
-            if not corr.empty and len(corr.columns) <= 12:
-                data = [["Field"] + [safe(c) for c in corr.columns]]
-                for idx in corr.index:
-                    row = [safe(idx)]
-                    for col in corr.columns:
-                        value = corr.loc[idx, col]
-                        row.append(f"{float(value):.3f}" if pd.notna(value) else "—")
-                    data.append(row)
-                widths = [max(20 * mm, 170 * mm / len(data[0]))] * len(data[0])
-                add_table(story, data, widths=widths, font_size=5.5)
-        except Exception:
-            pass
-
-    story.append(Paragraph(
-        "Correlation measures association between numeric fields; it does not establish causation.",
-        styles["Small"],
-    ) )
-
-
 # ============================================================
 # MAIN PDF FUNCTION
 # ============================================================
@@ -588,13 +481,14 @@ def generate_pdf(
     research_detail=None,
     user_analysis=None,
     dashboard_url=None,
-    report_sections=None,
-    multi_file_analysis=None,
 ):
-    """Generate the selected sections of the management PDF."""
-    if report_sections is None:
-        report_sections = DEFAULT_REPORT_SECTIONS
+    """Generate a compact, professional 10–15 page management report.
 
+    Dashboard charts are the same chart definitions used by the Streamlit
+    dashboard: the same sheet order, category, metric, chart type, title,
+    colour and Plotly styling. They are rendered as combined sheet panels for
+    the PDF; no fallback or replacement charts are generated.
+    """
     document = SimpleDocTemplate(
         file_path,
         pagesize=A4,
@@ -611,227 +505,295 @@ def generate_pdf(
     work_dir.mkdir(parents=True, exist_ok=True)
 
     total_charts = sum(len(s.get("charts", [])) for s in sheets or [])
-    dataset_sig = _dataset_signature(df)
     missing_total = int(df.isna().sum().sum())
     duplicate_total = int(df.duplicated().sum())
-    quality = max(
-        0,
-        round(
-            (1 - missing_total / max(len(df) * max(len(df.columns), 1), 1)) * 100
-        ),
-    )
-    first_section = True
+    quality = max(0, round((1 - missing_total / max(len(df) * max(len(df.columns), 1), 1)) * 100))
 
-    def begin_section():
-        nonlocal first_section
-        if not first_section:
-            story.append(PageBreak())
-        first_section = False
+    # --------------------------------------------------------
+    # 1. COVER / EXECUTIVE OVERVIEW
+    # --------------------------------------------------------
+    story.append(Spacer(1, 25))
+    story.append(Paragraph("AUTOMATED BUSINESS INTELLIGENCE REPORT", styles["ReportTitle"]))
+    story.append(Paragraph("Professional Management Summary", styles["Section"]))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(
+        f"This report converts the uploaded dataset into a management-ready view covering "
+        f"{len(df):,} records, {len(df.columns):,} fields, {len(sheets or []):,} dashboard sheets and {total_charts:,} dashboard visuals.",
+        styles["Normal"],
+    ))
+    story.append(Spacer(1, 12))
 
-    # 1. EXECUTIVE OVERVIEW
-    if _report_wants(report_sections, "Executive Overview"):
-        begin_section()
-        story.append(Spacer(1, 25))
-        story.append(Paragraph("AUTOMATED BUSINESS INTELLIGENCE REPORT", styles["ReportTitle"]))
-        story.append(Paragraph("Professional Management Summary", styles["Section"]))
-        story.append(Spacer(1, 10))
+    overview_data = [
+        ["Report Area", "What management receives"],
+        ["Dashboard", "One combined visual view of the generated dashboard sheets."],
+        ["Statistics", "A concise explanation of scale, typical values, spread and data quality."],
+        ["Business Insights", "Simple evidence-based signals, barriers and management focus areas."],
+        ["Domain Research", "Plain-language explanation of the dataset's business domain and fields."],
+        ["Management Questions", "All generated questions with a practical explanation of why each matters."],
+    ]
+    add_table(story, overview_data, widths=[45 * mm, 125 * mm], font_size=8)
+
+    story.append(Paragraph("Executive Interpretation", styles["Subsection"]))
+    story.append(Paragraph(_dashboard_overall_summary(df, sheets), styles["Normal"]))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(
+        f"Data quality indicator: <b>{quality}%</b> based on missing-cell coverage. "
+        f"Missing cells: <b>{missing_total:,}</b>; exact duplicate rows: <b>{duplicate_total:,}</b>.",
+        styles["Normal"],
+    ))
+    if dashboard_url:
+        href = escape(str(dashboard_url), quote=True)
+        story.append(Spacer(1, 16))
         story.append(Paragraph(
-            f"This report converts the uploaded dataset into a management-ready view covering "
-            f"{len(df):,} records, {len(df.columns):,} fields, {len(sheets or []):,} dashboard sheets and {total_charts:,} dashboard visuals.",
-            styles["Normal"],
+            f'<link href="{href}"><u>🔗 OPEN INTERACTIVE DASHBOARD PAGE</u></link>',
+            styles["Link"],
         ))
-        story.append(Spacer(1, 12))
-        overview_data = [
-            ["Report Area", "What management receives"],
-            ["Dashboard", "A combined visual view of the generated dashboard sheets."],
-            ["Statistics", "A concise explanation of scale, typical values, spread and data quality."],
-            ["Business Insights", "Simple evidence-based signals, barriers and management focus areas."],
-            ["Domain Research", "Plain-language explanation of the dataset's domain and fields."],
-            ["Management Questions", "Business questions generated from the actual uploaded schema."],
-        ]
-        add_table(story, overview_data, widths=[45 * mm, 125 * mm], font_size=8)
-        story.append(Paragraph("Executive Interpretation", styles["Subsection"]))
-        story.append(Paragraph(_dashboard_overall_summary(df, sheets), styles["Normal"]))
-        story.append(Spacer(1, 10))
         story.append(Paragraph(
-            f"Data quality indicator: <b>{quality}%</b> based on missing-cell coverage. "
-            f"Missing cells: <b>{missing_total:,}</b>; exact duplicate rows: <b>{duplicate_total:,}</b>.",
-            styles["Normal"],
+            "The link opens the same interactive dashboard inside the Streamlit application.",
+            styles["Small"],
         ))
-        if dashboard_url:
-            href = escape(str(dashboard_url), quote=True)
-            story.append(Spacer(1, 16))
+    story.append(PageBreak())
+
+    # --------------------------------------------------------
+    # 2. COMPLETE DASHBOARD — ONE PANEL PER SHEET, NO CHART-BY-CHART PAGES
+    # --------------------------------------------------------
+    story.append(Paragraph("1. Complete Dashboard", styles["Section"]))
+    story.append(Paragraph(
+        "The dashboard is presented as combined sheet-level panels rather than individual chart pages. "
+        "Each panel keeps the original chart arrangement together so management can read the dashboard as one analytical view.",
+        styles["Normal"],
+    ))
+    story.append(Spacer(1, 8))
+
+    for sheet_index, sheet in enumerate(sheets or [], start=1):
+        panel = _render_dashboard_panel(df, sheet, sheet_index, work_dir)
+        if panel:
             story.append(Paragraph(
-                f'<link href="{href}"><u>🔗 OPEN INTERACTIVE DASHBOARD PAGE</u></link>',
-                styles["Link"],
+                f"Dashboard Panel {sheet_index}: {safe(sheet.get('name', 'Dashboard'))}",
+                styles["Subsection"],
+            ))
+            story.append(Image(str(panel), width=174 * mm, height=0.0 * mm))
+            # ReportLab needs an explicit height; calculate from image ratio.
+            from PIL import Image as _PI
+            with _PI.open(panel) as im:
+                ratio = im.height / im.width
+            # Replace the zero-height flowable with correct dimensions.
+            story.pop()
+            story.append(Image(str(panel), width=174 * mm, height=174 * mm * ratio))
+
+            chart_titles = [
+                safe(c.get("title", "Business view"))
+                for c in sorted(sheet.get("charts", []), key=lambda x: x.get("position", 999))
+            ]
+            desc = safe(sheet.get("description", "Business dashboard analysis."))
+            story.append(Paragraph(
+                f"<b>Whole-panel explanation:</b> {desc} "
+                f"This panel brings together {len(chart_titles)} related views so management can compare the main dimensions and measures together rather than interpreting any single visual in isolation.",
+                styles["Small"],
+            ))
+        if sheet_index != len(sheets or []):
+            story.append(PageBreak())
+
+    story.append(PageBreak())
+
+    # --------------------------------------------------------
+    # 3. STATISTICS SUMMARY
+    # --------------------------------------------------------
+    story.append(Paragraph("2. Statistical Analysis — Management Summary", styles["Section"]))
+    stat_result = _simple_stat_summary(df)
+    if isinstance(stat_result, tuple):
+        stat_text, stat_rows = stat_result
+    else:
+        stat_text, stat_rows = stat_result, []
+    story.append(Paragraph(stat_text, styles["Normal"]))
+    story.append(Spacer(1, 8))
+
+    if stat_rows:
+        table_data = [["Measure", "Average", "Median", "Minimum", "Maximum", "Variation"]]
+        for row in stat_rows[:12]:
+            table_data.append([
+                row["Measure"], fmt_num(row["Average"]), fmt_num(row["Median"]),
+                fmt_num(row["Minimum"]), fmt_num(row["Maximum"]), fmt_num(row["Variation"]),
+            ])
+        add_table(story, table_data, widths=[43 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm, 27 * mm], font_size=6.7)
+
+    categorical = df.select_dtypes(include=["object", "category", "bool"])
+    story.append(Paragraph("Categorical Pattern Summary", styles["Subsection"]))
+    cat_rows = [["Field", "Largest observed group", "Share"]]
+    for col in list(categorical.columns)[:8]:
+        s = categorical[col].dropna().astype(str)
+        if s.empty:
+            continue
+        vc = s.value_counts()
+        cat_rows.append([pretty_column(col), safe(vc.index[0]), f"{vc.iloc[0] / len(s) * 100:.1f}%"])
+    if len(cat_rows) > 1:
+        add_table(story, cat_rows, widths=[65 * mm, 65 * mm, 40 * mm], font_size=7)
+    else:
+        story.append(Paragraph("No categorical fields were available for this summary.", styles["Small"]))
+
+    story.append(Paragraph("Statistical Interpretation", styles["Subsection"]))
+    story.append(Paragraph(
+        "Management should use the statistical results to understand the normal level of each measure, the amount of variation, and whether unusually high or low observations may be influencing averages. "
+        "The statistics support decision-making but should be read together with the dashboard and business context.",
+        styles["Normal"],
+    ))
+    story.append(PageBreak())
+
+    # --------------------------------------------------------
+    # 4. BUSINESS INSIGHTS
+    # --------------------------------------------------------
+    story.append(Paragraph("3. Business Insights & Management Focus", styles["Section"]))
+    story.append(Paragraph(
+        "The following findings are written in plain business language. They describe what the uploaded data shows, why it matters, and what management should focus on next. "
+        "No HR interpretation is applied unless the actual dataset supports an HR domain.",
+        styles["Normal"],
+    ))
+    story.append(Spacer(1, 8))
+
+    if hasattr(insights, "iterrows") and not insights.empty:
+        sev = insights.get("Severity", pd.Series(dtype=str)).astype(str).str.upper()
+        summary = [["Findings", "High Attention", "Medium", "Monitoring"]]
+        summary.append([
+            str(len(insights)), str(int((sev == "HIGH").sum())),
+            str(int((sev == "MEDIUM").sum())), str(int((sev == "LOW").sum()))
+        ])
+        add_table(story, summary, widths=[42 * mm, 42 * mm, 42 * mm, 42 * mm], font_size=8)
+
+        for _, row in insights.head(8).iterrows():
+            area = safe(row.get("Area", "Business Area"))
+            problem = safe(row.get("Problem", "Pattern identified."))
+            evidence = safe(row.get("Evidence", "Evidence is present in the uploaded data."))
+            impact = safe(row.get("Business Impact", "Further review is recommended."))
+            story.append(Paragraph(f"<b>{area}</b>", styles["Subsection"]))
+            story.append(Paragraph(
+                f"<b>What the data shows:</b> {problem}<br/>"
+                f"<b>Evidence:</b> {evidence}<br/>"
+                f"<b>Why management should care:</b> {impact}<br/>"
+                f"<b>Management focus:</b> Validate the pattern against the dashboard, identify the affected segment or measure, and decide what operational action or deeper analysis is required.",
+                styles["Normal"],
+            ))
+            story.append(Spacer(1, 5))
+    else:
+        story.append(Paragraph("No high-priority business finding was automatically identified from the available fields.", styles["Normal"]))
+
+    story.append(Paragraph("Overall Business Message", styles["Subsection"]))
+    story.append(Paragraph(
+        "The purpose of this section is not to label the business as good or bad. It identifies where the current data contains concentration, unusual values, outcome imbalance, data-quality limitations, or meaningful relationships that management should investigate.",
+        styles["Normal"],
+    ))
+    story.append(PageBreak())
+
+    # --------------------------------------------------------
+    # 5. DOMAIN RESEARCH
+    # --------------------------------------------------------
+    detailed = research_detail if isinstance(research_detail, dict) else {}
+    domain = detailed.get("domain", "")
+    if not domain and isinstance(research_result, dict):
+        domain = research_result.get("domain", "")
+    domain = domain or "General Business Analytics"
+    description = detailed.get("dataset_description", "")
+    if not description and isinstance(research_result, dict):
+        description = research_result.get("analysis", "")
+
+    story.append(Paragraph("4. Domain Research — Simple Business Explanation", styles["Section"]))
+    story.append(Paragraph(f"<b>Detected domain:</b> {safe(domain)}", styles["Normal"]))
+    story.append(Spacer(1, 6))
+    story.append(Paragraph(
+        safe(description or "The dataset has been interpreted from its actual columns and available research evidence."),
+        styles["Normal"],
+    ))
+
+    story.append(Paragraph("What this dataset can support", styles["Subsection"]))
+    uses = detailed.get("business_uses", [])
+    if uses:
+        for use in uses[:8]:
+            story.append(Paragraph(f"• {safe(use)}", styles["Small"]))
+    else:
+        story.append(Paragraph("Business performance monitoring, segmentation, trend analysis and decision support based on the available fields.", styles["Small"]))
+
+    story.append(Paragraph("Key Variables", styles["Subsection"]))
+    numeric_cols = list(df.select_dtypes(include="number").columns)
+    cat_cols = list(df.select_dtypes(include=["object", "category", "bool"]).columns)
+    key_data = [["Business measure candidates", "Business grouping candidates"]]
+    for i in range(max(len(numeric_cols), len(cat_cols), 1)):
+        if i >= 12:
+            break
+        key_data.append([
+            pretty_column(numeric_cols[i]) if i < len(numeric_cols) else "",
+            pretty_column(cat_cols[i]) if i < len(cat_cols) else "",
+        ])
+    add_table(story, key_data, widths=[85 * mm, 85 * mm], font_size=7)
+
+    story.append(Paragraph("Column-by-Column Explanation", styles["Subsection"]))
+    column_rows = detailed.get("column_rows", [])
+    if column_rows:
+        col_data = [["Column", "Type", "Simple meaning", "Missing"]]
+        for item in column_rows[:16]:
+            if not isinstance(item, dict):
+                continue
+            col_data.append([
+                pretty_column(item.get("Column", "")),
+                safe(item.get("Data Type", "")),
+                safe(item.get("Meaning / Explanation", "Available field used for analysis.")),
+                safe(item.get("Missing Values", 0)),
+            ])
+        add_table(story, col_data, widths=[37 * mm, 27 * mm, 88 * mm, 18 * mm], font_size=6.7)
+        if len(column_rows) > 16:
+            story.append(Paragraph(
+                f"The dataset contains {len(column_rows):,} documented fields. The table above highlights the first 16 to keep the management report concise.",
+                styles["Small"],
             ))
 
-    # 2. COMPLETE DASHBOARD
-    if _report_wants(report_sections, "Complete Dashboard"):
-        begin_section()
-        story.append(Paragraph("Complete Dashboard", styles["Section"]))
-        story.append(Paragraph(
-            "The dashboard is presented as combined sheet-level panels. Each panel preserves the original Streamlit chart definitions and arrangement.",
-            styles["Normal"],
-        ))
-        story.append(Spacer(1, 8))
-        for sheet_index, sheet in enumerate(sheets or [], start=1):
-            panel = _render_dashboard_panel(
-                df, sheet, sheet_index, work_dir, dataset_sig=dataset_sig
-            )
-            if panel:
-                from PIL import Image as _PI
-                with _PI.open(panel) as im:
-                    ratio = im.height / im.width
-                story.append(Paragraph(
-                    f"Dashboard Panel {sheet_index}: {safe(sheet.get('name', 'Dashboard'))}",
-                    styles["Subsection"],
-                ))
-                story.append(Image(
-                    str(panel),
-                    width=174 * mm,
-                    height=174 * mm * ratio,
-                ))
-                story.append(Paragraph(
-                    f"<b>Whole-panel explanation:</b> {safe(sheet.get('description', 'Business dashboard analysis.'))} "
-                    f"This panel combines {len(sheet.get('charts', []))} related views so management can compare dimensions and measures together.",
-                    styles["Small"],
-                ))
+    evidence = detailed.get("online_evidence", [])
+    if evidence:
+        story.append(Paragraph("Research Evidence", styles["Subsection"]))
+        for item in evidence[:4]:
+            story.append(Paragraph(f"• {safe(item)}", styles["Small"]))
+    story.append(PageBreak())
 
-    # 3. STATISTICS
-    if _report_wants(report_sections, "Statistical Analysis"):
-        begin_section()
-        story.append(Paragraph("Statistical Analysis — Management Summary", styles["Section"]))
-        stat_result = _simple_stat_summary(df)
-        if isinstance(stat_result, tuple):
-            stat_text, stat_rows = stat_result
-        else:
-            stat_text, stat_rows = stat_result, []
-        story.append(Paragraph(stat_text, styles["Normal"]))
-        if stat_rows:
-            table_data = [["Measure", "Average", "Median", "Minimum", "Maximum", "Variation"]]
-            for row in stat_rows[:12]:
-                table_data.append([
-                    row["Measure"], fmt_num(row["Average"]), fmt_num(row["Median"]),
-                    fmt_num(row["Minimum"]), fmt_num(row["Maximum"]), fmt_num(row["Variation"]),
-                ])
-            add_table(
-                story,
-                table_data,
-                widths=[43 * mm, 25 * mm, 25 * mm, 25 * mm, 25 * mm, 27 * mm],
-                font_size=6.7,
-            )
-        categorical = df.select_dtypes(include=["object", "category", "bool"])
-        cat_rows = [["Field", "Largest observed group", "Share"]]
-        for col in list(categorical.columns)[:8]:
-            s = categorical[col].dropna().astype(str)
-            if s.empty:
-                continue
-            vc = s.value_counts()
-            cat_rows.append([pretty_column(col), safe(vc.index[0]), f"{vc.iloc[0] / len(s) * 100:.1f}%"])
-        if len(cat_rows) > 1:
-            add_table(story, cat_rows, widths=[65 * mm, 65 * mm, 40 * mm], font_size=7)
-        story.append(Paragraph("Statistical Interpretation", styles["Subsection"]))
-        story.append(Paragraph(
-            "Management should use the statistical results to understand the normal level, variation and possible influence of unusually high or low observations. The results are descriptive and should be read with business context.",
-            styles["Normal"],
-        ))
+    # --------------------------------------------------------
+    # 6. MANAGEMENT QUESTIONS — ALL QUESTIONS + EXPLANATIONS
+    # --------------------------------------------------------
+    story.append(Paragraph("5. Management Focus Questions", styles["Section"]))
+    story.append(Paragraph(
+        "These are the business questions generated from the uploaded schema. Each question is included because it represents an area management can investigate using the dashboard and available data. The explanation below each question describes why the area deserves attention.",
+        styles["Normal"],
+    ))
+    story.append(Spacer(1, 8))
 
-    # 4. BUSINESS INSIGHTS
-    if _report_wants(report_sections, "Business Insights"):
-        begin_section()
-        story.append(Paragraph("Business Insights & Management Focus", styles["Section"]))
-        story.append(Paragraph(
-            "The following findings describe what the uploaded data shows, why the pattern matters, and what management can investigate next.",
-            styles["Normal"],
-        ))
-        if hasattr(insights, "iterrows") and not insights.empty:
-            sev = insights.get("Severity", pd.Series(dtype=str)).astype(str).str.upper()
-            add_table(
-                story,
-                [["Findings", "High Attention", "Medium", "Monitoring"],
-                 [str(len(insights)), str(int((sev == "HIGH").sum())), str(int((sev == "MEDIUM").sum())), str(int((sev == "LOW").sum()))]],
-                widths=[42 * mm, 42 * mm, 42 * mm, 42 * mm],
-                font_size=8,
-            )
-            for _, row in insights.head(8).iterrows():
-                story.append(Paragraph(
-                    safe(row.get("Area", "Business Area")),
-                    styles["Subsection"],
-                ))
-                story.append(Paragraph(
-                    f"<b>What the data shows:</b> {safe(row.get('Problem', 'Pattern identified.'))}<br/>"
-                    f"<b>Evidence:</b> {safe(row.get('Evidence', 'Evidence is present in the uploaded data.'))}<br/>"
-                    f"<b>Business impact:</b> {safe(row.get('Business Impact', 'Further review is recommended.'))}",
-                    styles["Normal"],
-                ))
-        else:
-            story.append(Paragraph("No automatically generated business findings were available.", styles["Normal"]))
+    all_questions = []
+    seen = set()
+    for q in (questions or []):
+        q = re.sub(r"\s+", " ", str(q)).strip()
+        if q and q.lower() not in seen:
+            seen.add(q.lower())
+            all_questions.append(q)
 
-    # 5. DOMAIN RESEARCH
-    if _report_wants(report_sections, "Domain Research"):
-        begin_section()
-        detailed = research_detail if isinstance(research_detail, dict) else {}
-        domain = detailed.get("domain", "")
-        if not domain and isinstance(research_result, dict):
-            domain = research_result.get("domain", "")
-        domain = domain or "General Business Analytics"
-        description = detailed.get("dataset_description", "")
-        if not description and isinstance(research_result, dict):
-            description = research_result.get("analysis", "")
-        story.append(Paragraph("Domain Research — Simple Business Explanation", styles["Section"]))
-        story.append(Paragraph(f"<b>Detected domain:</b> {safe(domain)}", styles["Normal"]))
-        story.append(Spacer(1, 6))
-        story.append(Paragraph(safe(description or "The dataset has been interpreted from its actual columns and available research evidence."), styles["Normal"]))
-        story.append(Paragraph("What this dataset can support", styles["Subsection"]))
-        uses = detailed.get("business_uses", [])
-        for use in uses[:8] if uses else ["Business performance monitoring, trend analysis, segmentation and decision support."]:
-            story.append(Paragraph(f"• {safe(use)}", styles["Small"]))
-        story.append(Paragraph("Column-by-Column Explanation", styles["Subsection"]))
-        column_rows = detailed.get("column_rows", [])
-        if column_rows:
-            col_data = [["Column", "Type", "Simple meaning", "Missing"]]
-            for item in column_rows[:16]:
-                if isinstance(item, dict):
-                    col_data.append([
-                        pretty_column(item.get("Column", "")),
-                        safe(item.get("Data Type", "")),
-                        safe(item.get("Meaning / Explanation", "Available field used for analysis.")),
-                        safe(item.get("Missing Values", 0)),
-                    ])
-            add_table(story, col_data, widths=[37 * mm, 27 * mm, 88 * mm, 18 * mm], font_size=6.7)
-
-    # 6. MANAGEMENT QUESTIONS
-    if _report_wants(report_sections, "Management Focus Questions"):
-        begin_section()
-        story.append(Paragraph("Management Focus Questions", styles["Section"]))
-        story.append(Paragraph(
-            "These questions are generated from the uploaded schema and help convert observed data patterns into practical areas for investigation.",
-            styles["Normal"],
-        ))
-        all_questions = []
-        seen = set()
-        for q in questions or []:
-            q = re.sub(r"\s+", " ", str(q)).strip()
-            if q and q.lower() not in seen:
-                seen.add(q.lower())
-                all_questions.append(q)
+    if all_questions:
         for i, q in enumerate(all_questions, start=1):
             story.append(Paragraph(f"<b>{i}. {safe(q)}</b>", styles["Question"]))
             story.append(Paragraph(
                 f"<b>Why management should focus on this:</b> {_management_explanation(df, q)}",
                 styles["Small"],
             ))
+            story.append(Spacer(1, 5))
+    else:
+        story.append(Paragraph("No business questions were generated for this dataset.", styles["Normal"]))
+    story.append(PageBreak())
 
-    # 7. RECOMMENDATIONS
-    if _report_wants(report_sections, "Recommendations & Development Opportunities"):
-        begin_section()
-        story.append(Paragraph("Recommendations & Development Opportunities", styles["Section"]))
-        story.append(Paragraph(
-            "Recommendations are connected to the observed dataset structure and are written as practical next steps rather than generic advice.",
-            styles["Normal"],
-        ))
-        for i, item in enumerate((recommendations or [])[:10], start=1):
+    # --------------------------------------------------------
+    # 7. RECOMMENDATIONS + DEVELOPMENT OPPORTUNITIES
+    # --------------------------------------------------------
+    story.append(Paragraph("6. Recommendations & Development Opportunities", styles["Section"]))
+    story.append(Paragraph(
+        "Recommendations below are connected to the observed dataset structure and findings. They are written as practical next steps rather than generic industry advice.",
+        styles["Normal"],
+    ))
+    story.append(Spacer(1, 8))
+
+    recs = recommendations or []
+    if recs:
+        for i, item in enumerate(recs[:10], start=1):
             if isinstance(item, dict):
                 title = item.get("Problem") or item.get("Title") or item.get("Recommendation") or f"Recommendation {i}"
                 action = item.get("What business should do") or item.get("Action") or item.get("Recommendation") or "Review the relevant dataset pattern and define a measurable action."
@@ -841,70 +803,58 @@ def generate_pdf(
                 action = str(item)
                 help_text = "Use the dashboard evidence to validate the action before implementation."
             story.append(Paragraph(f"<b>{i}. {safe(title)}</b>", styles["Subsection"]))
-            story.append(Paragraph(f"<b>What to do:</b> {safe(action)}<br/><b>How it helps:</b> {safe(help_text)}", styles["Normal"]))
-        story.append(Paragraph("Development Opportunities", styles["Subsection"]))
-        for item in [
-            "Automate recurring data-quality checks before each dashboard refresh.",
-            "Add segment-level monitoring for important business dimensions.",
-            "Track management questions as measurable KPIs for future comparison.",
-            "Use meaningful relationships and outcome fields as candidates for predictive analysis where appropriate.",
-        ]:
-            story.append(Paragraph(f"• {item}", styles["Small"]))
-
-    # 8. ASK DATA / USER ANALYSIS
-    if _report_wants(report_sections, "Ask Data / User Analysis"):
-        begin_section()
-        story.append(Paragraph("Ask Data / User-Requested Analysis", styles["Section"]))
-        if isinstance(user_analysis, dict):
-            story.append(Paragraph(f"<b>Request:</b> {safe(user_analysis.get('request', user_analysis.get('question', 'User request')))}", styles["Normal"]))
-            if user_analysis.get("answer"):
-                story.append(Paragraph(f"<b>Answer:</b> {safe(user_analysis.get('answer'))}", styles["Normal"]))
-            if user_analysis.get("evidence"):
-                story.append(Paragraph(f"<b>Evidence:</b> {safe(user_analysis.get('evidence'))}", styles["Normal"]))
-        elif user_analysis:
-            story.append(Paragraph(safe(user_analysis), styles["Normal"]))
-        else:
-            story.append(Paragraph("No user-requested analysis was captured for this report.", styles["Normal"]))
-
-    # 9. MULTI-FILE CORRELATION
-    if _report_wants(report_sections, "Multi-File Correlation"):
-        begin_section()
-        story.append(Paragraph("Multi-File Correlation Analysis", styles["Section"]))
-        _append_multi_file_report_section(story, multi_file_analysis, styles)
-
-    # 10. DATA QUALITY / FINAL TAKEAWAY
-    if _report_wants(report_sections, "Data Quality & Final Takeaway"):
-        begin_section()
-        story.append(Paragraph("Data Quality & Final Management Takeaway", styles["Section"]))
-        add_table(
-            story,
-            [
-                ["Quality Check", "Result", "Management meaning"],
-                ["Records", f"{len(df):,}", "Available observations in the uploaded dataset."],
-                ["Columns", f"{len(df.columns):,}", "Available measures and dimensions."],
-                ["Missing cells", f"{missing_total:,}", "Review affected fields before critical use."],
-                ["Duplicate rows", f"{duplicate_total:,}", "Confirm whether repeated rows are genuine or accidental."],
-                ["Data quality indicator", f"{quality}%", "Simple completeness-based indicator; not a full validation score."],
-            ],
-            widths=[45 * mm, 35 * mm, 90 * mm],
-            font_size=7.2,
-        )
-        story.append(Paragraph("Final Management Takeaway", styles["Subsection"]))
-        story.append(Paragraph(
-            "Use the dashboard as the visual starting point, the statistical summary to understand scale and variation, the business insights to identify where attention is needed, and the management questions to guide the next investigation. Correlation and descriptive patterns do not automatically establish causation.",
-            styles["Normal"],
-        ))
-        if dashboard_url:
-            href = escape(str(dashboard_url), quote=True)
-            story.append(Spacer(1, 18))
-            story.append(Paragraph("Interactive Dashboard", styles["Subsection"]))
             story.append(Paragraph(
-                f'<link href="{href}"><u>🔗 OPEN INTERACTIVE DASHBOARD PAGE</u></link>',
-                styles["Link"],
+                f"<b>What to do:</b> {safe(action)}<br/><b>How it helps:</b> {safe(help_text)}",
+                styles["Normal"],
             ))
 
-    if not story:
-        story.append(Paragraph("No report sections were selected.", styles["Normal"]))
+    story.append(Paragraph("Development Opportunities", styles["Subsection"]))
+    dev = [
+        "Automate recurring data-quality checks before each dashboard refresh.",
+        "Add segment-level monitoring for the business dimensions identified as important in the dashboard.",
+        "Track the management questions as measurable KPIs so future reports can compare changes over time.",
+        "Use the strongest relationships and outcome fields as candidates for predictive or scenario analysis where appropriate.",
+    ]
+    for item in dev:
+        story.append(Paragraph(f"• {item}", styles["Small"]))
 
-    document.build(story, onFirstPage=_footer, onLaterPages=_footer)
+    if user_analysis:
+        story.append(Paragraph("User-Requested AI Analysis", styles["Subsection"]))
+        story.append(Paragraph(safe(user_analysis), styles["Small"]))
+    story.append(PageBreak())
 
+    # --------------------------------------------------------
+    # 8. DATA QUALITY + FINAL MANAGEMENT TAKEAWAY
+    # --------------------------------------------------------
+    story.append(Paragraph("7. Data Quality & Final Management Takeaway", styles["Section"]))
+    quality_data = [
+        ["Quality Check", "Result", "Management meaning"],
+        ["Records", f"{len(df):,}", "Available observations in the uploaded file."],
+        ["Columns", f"{len(df.columns):,}", "Available measures and business dimensions."],
+        ["Missing cells", f"{missing_total:,}", "Review affected fields before using them for critical decisions."],
+        ["Duplicate rows", f"{duplicate_total:,}", "Confirm whether repeated rows are genuine or accidental."],
+        ["Data quality indicator", f"{quality}%", "Simple completeness-based indicator; not a full validation score."],
+    ]
+    add_table(story, quality_data, widths=[45 * mm, 35 * mm, 90 * mm], font_size=7.2)
+
+    story.append(Paragraph("Final Management Takeaway", styles["Subsection"]))
+    story.append(Paragraph(
+        "Use the dashboard as the visual starting point, the statistical summary to understand scale and variation, the business insights to identify where attention is needed, and the management questions to guide the next investigation. "
+        "The report is evidence-based and should be combined with operational knowledge before any major business decision is made.",
+        styles["Normal"],
+    ))
+
+    if dashboard_url:
+        href = escape(str(dashboard_url), quote=True)
+        story.append(Spacer(1, 18))
+        story.append(Paragraph("Interactive Dashboard", styles["Subsection"]))
+        story.append(Paragraph(
+            f'<link href="{href}"><u>🔗 OPEN INTERACTIVE DASHBOARD PAGE</u></link>',
+            styles["Link"],
+        ))
+        story.append(Paragraph(
+            f"Dashboard page: {safe(dashboard_url)}",
+            styles["Small"],
+        ))
+
+    document.build(story)
