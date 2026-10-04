@@ -5469,6 +5469,13 @@ with tabs[7]:
 
                 st.session_state.pdf_questions = pdf_questions
 
+            # Calculate the KPI dictionary required by the PDF report generator.
+            # This was previously referenced as `kpis` without being initialized.
+            try:
+                kpis = calculate_kpis(df)
+            except Exception:
+                kpis = {}
+
             report_signature = _build_report_cache_signature(
                 df,
                 st.session_state.sheets,
@@ -5568,5 +5575,3 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
-
