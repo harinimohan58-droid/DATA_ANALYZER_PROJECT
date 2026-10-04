@@ -3107,6 +3107,26 @@ with tabs[1]:
 
     st.divider()
 
+    # ======================================================
+    # DASHBOARD FILTERS
+    # ======================================================
+    # Use the same filter engine as the dedicated dashboard page.
+    # This makes filters available directly inside the main
+    # Dashboard Builder while preserving the existing multi-file
+    # upload and report-selection workflow.
+    filtered_dashboard_df, active_dashboard_filters = _render_dashboard_global_filters(df)
+
+    if active_dashboard_filters:
+        st.success(
+            f"Showing {len(filtered_dashboard_df):,} of {len(df):,} records after dashboard filters."
+        )
+    else:
+        st.caption(
+            f"Showing all {len(df):,} uploaded records. Select filters above to narrow the dashboard."
+        )
+
+    st.divider()
+
     sheet_tabs = st.tabs(
         [
             sheet["name"]
@@ -3506,7 +3526,7 @@ with tabs[1]:
                 ]:
 
                     fig = create_chart(
-                        df,
+                        filtered_dashboard_df,
                         category=chart.get(
                             "category"
                         ),
@@ -5298,6 +5318,7 @@ def _build_report_cache_signature(dataframe, sheets, questions, dashboard_url, r
         "dashboard_url": dashboard_url,
         "report_sections": report_sections or [],
         "selected_dashboard_sheets": selected_dashboard_sheets or [],
+        "dashboard_global_filters": st.session_state.get("dashboard_global_filters", {}),
         "multi_file_analysis": multi_payload,
     })
 
