@@ -2909,6 +2909,21 @@ else:
             )
 
 # ==========================================================
+# MAIN APPLICATION TABS
+# ==========================================================
+
+tabs = st.tabs([
+    "📊 Overview",
+    "🛠️ Dashboard Builder",
+    "📈 Statistics",
+    "🚨 Business Insights",
+    "🔎 Domain Research",
+    "💡 Recommendations",
+    "🤖 Ask Data",
+    "📄 Final Report",
+])
+
+# ==========================================================
 # OVERVIEW
 # ==========================================================
 
