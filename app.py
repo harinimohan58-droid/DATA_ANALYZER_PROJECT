@@ -2918,6 +2918,9 @@ df = st.session_state.get("df")
 if df is None or df.empty:
     st.stop()
 
+# Build the column classification used by the Overview tab.
+# This reuses the existing project function and does not change the dashboard/model logic.
+column_types = detect_column_types(df)
 
 tabs = st.tabs([
     "📊 Overview",
@@ -5565,3 +5568,5 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
+
