@@ -1623,9 +1623,6 @@ st.set_page_config(
     layout="wide"
 )
 
-_enforce_authentication()
-
-
 # ==========================================================
 # CUSTOM CSS
 # ==========================================================
@@ -2050,12 +2047,6 @@ if "uploaded_files_analysis" not in st.session_state:
 if "uploaded_files_key" not in st.session_state:
     st.session_state.uploaded_files_key = None
 
-if "current_user_email" not in st.session_state:
-    st.session_state.current_user_email = None
-
-if "current_user_name" not in st.session_state:
-    st.session_state.current_user_name = None
-
 
 # ==========================================================
 # HEADER
@@ -2135,11 +2126,6 @@ with st.sidebar:
         pair_count_for_sidebar = file_count_for_sidebar * (file_count_for_sidebar - 1) // 2
         st.success(f"📂 {file_count_for_sidebar} file(s) selected")
         st.caption(f"Automatic pairwise comparisons: {pair_count_for_sidebar}")
-
-    st.markdown("### 🔐 Current Login")
-    st.write(f"**Name:** {st.session_state.get('current_user_name', 'User')}")
-    st.write(f"**Email:** {st.session_state.get('current_user_email', 'Unavailable')}")
-    st.button("🚪 Log out", on_click=st.logout, use_container_width=True)
 
     sheet_count = st.selectbox(
         "Number of Dashboard Sheets",
