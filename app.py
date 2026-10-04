@@ -2210,18 +2210,79 @@ def _apply_dashboard_filters(dataframe, filters):
 
 
 def _dashboard_filter_candidates(dataframe):
-    """Return useful low-cardinality fields for dashboard slicers."""
+    """
+    Automatically identify useful columns for dashboard filters.
+
+    Priority:
+    1. Categorical / text columns with reasonable unique values
+    2. Boolean columns
+    3. Date columns
+    4. Low-cardinality numeric columns
+    5. Fallback columns if no suitable fields are detected
+    """
+
     candidates = []
+    categorical_candidates = []
+    date_candidates = []
+    numeric_candidates = []
+
     for column in dataframe.columns:
-        series = dataframe[column]
-        nunique = int(series.nunique(dropna=True))
+        try:
+            series = dataframe[column]
+            nunique = int(series.nunique(dropna=True))
 
-        is_date = pd.api.types.is_datetime64_any_dtype(series)
-        is_categorical = pd.api.types.is_object_dtype(series) or pd.api.types.is_categorical_dtype(series) or pd.api.types.is_bool_dtype(series)
-        is_low_card_numeric = pd.api.types.is_numeric_dtype(series) and nunique <= 25
+            if nunique == 0:
+                continue
 
-        if (is_date or is_categorical or is_low_card_numeric) and 1 <= nunique <= 100:
-            candidates.append(column)
+            is_date = pd.api.types.is_datetime64_any_dtype(series)
+
+            is_categorical = (
+                pd.api.types.is_object_dtype(series)
+                or pd.api.types.is_categorical_dtype(series)
+                or pd.api.types.is_bool_dtype(series)
+            )
+
+            is_numeric = pd.api.types.is_numeric_dtype(series)
+
+            # TEXT / CATEGORY / BOOLEAN
+            # Keep useful business dimensions first.
+            if is_categorical:
+                if nunique <= 100:
+                    categorical_candidates.append(column)
+                elif nunique <= 500:
+                    # Secondary text fields are still useful as filters.
+                    categorical_candidates.append(column)
+
+            # DATE
+            elif is_date:
+                date_candidates.append(column)
+
+            # NUMERIC
+            elif is_numeric and nunique <= 50:
+                numeric_candidates.append(column)
+
+        except Exception:
+            continue
+
+    # Priority order: dimensions first, then dates, then numeric fields.
+    candidates.extend(categorical_candidates)
+    candidates.extend(date_candidates)
+    candidates.extend(numeric_candidates)
+    candidates = list(dict.fromkeys(candidates))
+
+    # FALLBACK:
+    # If the dataset contains no obvious low-cardinality fields, expose
+    # useful columns instead of returning an empty filter list.
+    if not candidates:
+        for column in dataframe.columns:
+            try:
+                if dataframe[column].nunique(dropna=True) > 1:
+                    candidates.append(column)
+            except Exception:
+                continue
+
+            if len(candidates) >= 12:
+                break
 
     return candidates[:12]
 
