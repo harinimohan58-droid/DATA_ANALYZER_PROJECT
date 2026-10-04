@@ -2912,6 +2912,13 @@ else:
 # MAIN APPLICATION TABS
 # ==========================================================
 
+# Do not render the analytics tabs until a dataset has been uploaded.
+# This prevents df/column_types NameError on the initial empty workspace.
+df = st.session_state.get("df")
+if df is None or df.empty:
+    st.stop()
+
+
 tabs = st.tabs([
     "📊 Overview",
     "🛠️ Dashboard Builder",
