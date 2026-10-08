@@ -72,389 +72,162 @@ from modules.report_generator import (
     generate_pdf
 )
 
-from email_service import send_report_email
-
 
 # ==========================================================
-# AUTHENTICATION / ACCESS CONTROL - SUPABASE
+# AUTHENTICATION / ACCESS CONTROL
 # ==========================================================
 
-import re
-import uuid
-from pathlib import Path
-
-import requests
-import streamlit as st
-
-
-def get_supabase_settings():
+def _get_secret_section(name):
+    """Read a Streamlit secrets table without assuming it is a built-in dict."""
     try:
-        section = st.secrets.get("supabase", {})
-        url = str(section.get("url", "")).strip().rstrip("/")
-        key = str(section.get("anon_key", "")).strip()
-        bucket = str(section.get("avatar_bucket", "avatars")).strip() or "avatars"
-        if not url or not key:
+        section = st.secrets.get(name, {})
+        return section if hasattr(section, "get") else {}
+    except Exception:
+        return {}
+
+
+def _auth_is_configured():
+    """Return True when the complete Streamlit OIDC configuration is available."""
+    auth = _get_secret_section("auth")
+    required = (
+        "redirect_uri",
+        "cookie_secret",
+        "client_id",
+        "client_secret",
+        "server_metadata_url",
+    )
+    try:
+        return all(bool(auth.get(key)) for key in required)
+    except Exception:
+        return False
+
+
+def _allowed_email_set():
+    """Read the allow-list used after OIDC authentication."""
+    access = _get_secret_section("access")
+    try:
+        values = access.get("allowed_emails", [])
+    except Exception:
+        values = []
+
+    if isinstance(values, str):
+        values = [values]
+
+    try:
+        return {
+            str(value).strip().lower()
+            for value in values
+            if str(value).strip()
+        }
+    except Exception:
+        return set()
+
+
+def _current_authenticated_user():
+    """Return the verified current OIDC user, or None when not logged in."""
+    try:
+        is_logged_in = bool(getattr(st.user, "is_logged_in", False))
+        if not is_logged_in:
             return None
-        return {"url": url, "anon_key": key, "avatar_bucket": bucket}
+
+        email = str(getattr(st.user, "email", "") or "").strip().lower()
+        name = str(getattr(st.user, "name", "") or "User").strip()
+        email_verified = getattr(st.user, "email_verified", True)
+
+        if not email:
+            return None
+
+        if isinstance(email_verified, str):
+            email_verified = email_verified.strip().lower() == "true"
+
+        return {
+            "email": email,
+            "name": name or "User",
+            "email_verified": bool(email_verified),
+        }
     except Exception:
         return None
 
 
-def _headers(access_token=None):
-    settings = get_supabase_settings()
-    if not settings:
-        return None
-    headers = {
-        "apikey": settings["anon_key"],
-        "Content-Type": "application/json",
-    }
-    if access_token:
-        headers["Authorization"] = f"Bearer {access_token}"
-    return headers
-
-
-def _error_message(response):
-    try:
-        data = response.json()
-        return data.get("msg") or data.get("message") or data.get("error_description") or data.get("error") or response.text
-    except Exception:
-        return response.text or f"Request failed with HTTP {response.status_code}."
-
-
-def _valid_email(email):
-    return bool(re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email or ""))
-
-
-def sign_up_user(email, password, full_name):
-    settings = get_supabase_settings()
-    if not settings:
-        return False, "Supabase authentication is not configured."
-    if not _valid_email(email):
-        return False, "Please enter a valid email address."
-
-    try:
-        response = requests.post(
-            f"{settings['url']}/auth/v1/signup",
-            headers=_headers(),
-            json={
-                "email": email,
-                "password": password,
-                "data": {"full_name": full_name},
-            },
-            timeout=30,
-        )
-        if response.status_code not in (200, 201):
-            return False, _error_message(response)
-
-        data = response.json()
-        user = data.get("user") or {}
-        user_id = user.get("id")
-        access_token = data.get("access_token", "")
-
-        if not user_id:
-            return False, "Supabase did not return a user ID. Check your Supabase Auth settings."
-
-        return True, {
-            "user_id": user_id,
-            "email": user.get("email", email),
-            "name": full_name,
-            "access_token": access_token,
-        }
-    except requests.RequestException as exc:
-        return False, f"Could not connect to Supabase: {exc}"
-
-
-def sign_in_user(email, password):
-    settings = get_supabase_settings()
-    if not settings:
-        return False, "Supabase authentication is not configured."
-
-    try:
-        response = requests.post(
-            f"{settings['url']}/auth/v1/token?grant_type=password",
-            headers=_headers(),
-            json={"email": email, "password": password},
-            timeout=30,
-        )
-        if response.status_code != 200:
-            return False, _error_message(response)
-
-        data = response.json()
-        user = data.get("user") or {}
-        user_id = user.get("id")
-        access_token = data.get("access_token", "")
-
-        if not user_id or not access_token:
-            return False, "Login response did not contain a valid session."
-
-        profile = get_profile(user_id, access_token) or {}
-        return True, {
-            "user_id": user_id,
-            "email": user.get("email", email),
-            "name": profile.get("full_name") or user.get("user_metadata", {}).get("full_name", "User"),
-            "photo_url": profile.get("photo_url", ""),
-            "access_token": access_token,
-        }
-    except requests.RequestException as exc:
-        return False, f"Could not connect to Supabase: {exc}"
-
-
-def upload_profile_photo(user_id, access_token, uploaded_file):
-    settings = get_supabase_settings()
-    if not settings:
-        return False, "Supabase is not configured."
-    if not uploaded_file:
-        return False, "Please upload a profile photo."
-
-    try:
-        raw = uploaded_file.getvalue()
-        if len(raw) > 5 * 1024 * 1024:
-            return False, "Profile photo must be 5 MB or smaller."
-
-        suffix = Path(uploaded_file.name).suffix.lower() or ".jpg"
-        object_name = f"{user_id}/{uuid.uuid4().hex}{suffix}"
-        content_type = uploaded_file.type or "image/jpeg"
-
-        headers = {
-            "apikey": settings["anon_key"],
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": content_type,
-            "x-upsert": "true",
-        }
-
-        response = requests.post(
-            f"{settings['url']}/storage/v1/object/{settings['avatar_bucket']}/{object_name}",
-            headers=headers,
-            data=raw,
-            timeout=60,
-        )
-        if response.status_code not in (200, 201):
-            return False, _error_message(response)
-
-        public_url = (
-            f"{settings['url']}/storage/v1/object/public/"
-            f"{settings['avatar_bucket']}/{object_name}"
-        )
-
-        profile_headers = _headers(access_token)
-        profile_headers["Prefer"] = "return=minimal"
-        update = requests.patch(
-            f"{settings['url']}/rest/v1/profiles?id=eq.{user_id}",
-            headers=profile_headers,
-            json={"photo_url": public_url},
-            timeout=30,
-        )
-
-        if update.status_code not in (200, 204):
-            return False, _error_message(update)
-
-        return True, public_url
-    except requests.RequestException as exc:
-        return False, f"Could not upload profile photo: {exc}"
-
-
-def get_profile(user_id, access_token):
-    settings = get_supabase_settings()
-    if not settings or not user_id or not access_token:
-        return None
-
-    try:
-        response = requests.get(
-            f"{settings['url']}/rest/v1/profiles",
-            headers=_headers(access_token),
-            params={"id": f"eq.{user_id}", "select": "id,email,full_name,photo_url"},
-            timeout=20,
-        )
-        if response.status_code != 200:
-            return None
-        rows = response.json()
-        return rows[0] if rows else None
-    except requests.RequestException:
-        return None
-
-
-def sign_out_user(access_token):
-    settings = get_supabase_settings()
-    if not settings or not access_token:
-        return
-    try:
-        requests.post(
-            f"{settings['url']}/auth/v1/logout",
-            headers=_headers(access_token),
-            timeout=15,
-        )
-    except requests.RequestException:
-        pass
-
-
-
-def _render_auth_gate():
-    settings = get_supabase_settings()
-    if not settings:
-        st.error("Authentication is not configured. Add [supabase] settings in Streamlit Cloud → Settings → Secrets.")
-        st.stop()
-
+def _render_login_gate():
+    """Stop the application until the user has authenticated and is allowed."""
     st.markdown(
         """
-        <div style="max-width:900px;margin:3rem auto 1rem;text-align:center;">
-            <div style="font-size:3rem;">📊</div>
-            <h1 style="color:#22305C;margin-bottom:.2rem;">Dashboard Analyzer AI</h1>
-            <p style="color:#7C756D;font-size:1.05rem;">Secure multi-user business intelligence platform</p>
+        <div style="max-width:760px;margin:8vh auto 0;padding:36px 40px;
+             background:#FFFFFF;border:1px solid #EEE1D6;border-radius:18px;
+             box-shadow:0 14px 40px rgba(34,48,92,.10);">
+            <div style="font-size:13px;font-weight:800;letter-spacing:.12em;
+                        text-transform:uppercase;color:#E0553F;">PRIVATE WORKSPACE</div>
+            <div style="font-size:34px;font-weight:800;color:#22305C;margin-top:8px;">
+                DATA ANALYZER
+            </div>
+            <div style="font-size:15px;color:#7C756D;margin-top:8px;line-height:1.55;">
+                Enter your email ID below, then continue with your authorized Google account.
+                Only email addresses in the configured access list can enter the application.
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    login_tab, create_tab = st.tabs(["🔐 Login", "✨ Create Account"])
-
-    with login_tab:
-        st.markdown("### Welcome back")
-        email = st.text_input("Email ID", placeholder="your-email@gmail.com", key="auth_login_email")
-        password = st.text_input("Password", type="password", key="auth_login_password")
-
-        if st.button("Login", type="primary", use_container_width=True, key="auth_login_button"):
-            if not email.strip() or not password:
-                st.warning("Please enter your email ID and password.")
-            else:
-                with st.spinner("Signing you in..."):
-                    ok, result = sign_in_user(email.strip(), password)
-                if ok:
-                    st.session_state.auth_access_token = result["access_token"]
-                    st.session_state.auth_user_id = result["user_id"]
-                    st.session_state.auth_email = result["email"]
-                    st.session_state.auth_name = result["name"]
-                    st.session_state.auth_photo_url = result.get("photo_url", "")
-                    st.rerun()
-                else:
-                    st.error(result)
-
-    with create_tab:
-        st.markdown("### Create your account")
-        st.caption("You must create an account before using the dashboard.")
-
-        photo = st.file_uploader(
-            "Profile Photo *",
-            type=["png", "jpg", "jpeg", "webp"],
-            key="auth_profile_photo",
-        )
-        name = st.text_input(
-            "Full Name *",
-            placeholder="Enter your full name",
-            key="auth_signup_name",
-        )
-        signup_email = st.text_input(
-            "Email ID *",
+    left, center, right = st.columns([1, 2, 1])
+    with center:
+        st.markdown("### 🔐 Sign in")
+        st.text_input(
+            "Email ID",
             placeholder="your-email@gmail.com",
-            key="auth_signup_email",
+            key="login_email_hint",
+            help="This identifies the account you intend to use. Access is granted only after the identity provider verifies the email.",
         )
-        signup_password = st.text_input(
-            "Password *",
-            type="password",
-            key="auth_signup_password",
-        )
-        confirm = st.text_input(
-            "Confirm Password *",
-            type="password",
-            key="auth_signup_confirm",
-        )
-
-        if st.button(
-            "Create Account",
-            type="primary",
+        st.button(
+            "Continue with Google",
+            on_click=st.login,
             use_container_width=True,
-            key="auth_create_button",
-        ):
-            if not name.strip() or not signup_email.strip() or not photo:
-                st.warning("Full name, email and profile photo are required.")
-            elif len(signup_password) < 8:
-                st.warning("Password must contain at least 8 characters.")
-            elif signup_password != confirm:
-                st.warning("Passwords do not match.")
-            else:
-                with st.spinner("Creating your account..."):
-                    ok, result = sign_up_user(
-                        signup_email.strip(),
-                        signup_password,
-                        name.strip(),
-                    )
-
-                if ok:
-                    photo_ok, photo_result = upload_profile_photo(
-                        result["user_id"],
-                        result.get("access_token", ""),
-                        photo,
-                    )
-                    if not photo_ok:
-                        st.error(
-                            f"Account created, but photo upload failed: {photo_result}"
-                        )
-                    else:
-                        st.success(
-                            "✅ Account created successfully. "
-                            "Go to Login and sign in with your email and password."
-                        )
-                        if not result.get("access_token"):
-                            st.info(
-                                "Check your email and confirm your account before logging in."
-                            )
-                else:
-                    st.error(result)
-
+        )
+        st.caption(
+            "Your typed email is not used as authentication by itself. "
+            "The authenticated email returned by Google is checked against the allow-list."
+        )
     st.stop()
 
 
 def _enforce_authentication():
-    token = st.session_state.get("auth_access_token")
-    user_id = st.session_state.get("auth_user_id")
-
-    if not token or not user_id:
-        _render_auth_gate()
-
-    profile = get_profile(user_id, token)
-    if profile:
-        st.session_state.auth_name = profile.get(
-            "full_name",
-            st.session_state.get("auth_name", "User"),
+    """Authenticate first, then authorize by verified email allow-list."""
+    if not _auth_is_configured():
+        st.error(
+            "Authentication is not configured correctly. Add valid [auth] and [access] "
+            "settings in Streamlit Cloud → Settings → Secrets, then reboot the app."
         )
-        st.session_state.auth_email = profile.get(
-            "email",
-            st.session_state.get("auth_email", ""),
+        st.stop()
+
+    user = _current_authenticated_user()
+    if user is None:
+        _render_login_gate()
+
+    allowed = _allowed_email_set()
+    if not user["email_verified"]:
+        st.error("Your email address could not be verified by the identity provider.")
+        st.button("Log out", on_click=st.logout)
+        st.stop()
+
+    if not allowed:
+        st.error(
+            "No authorized email addresses are configured. Add at least one email to "
+            "[access].allowed_emails in Streamlit Secrets."
         )
-        st.session_state.auth_photo_url = profile.get(
-            "photo_url",
-            st.session_state.get("auth_photo_url", ""),
+        st.button("Log out", on_click=st.logout)
+        st.stop()
+
+    if user["email"] not in allowed:
+        st.error(
+            f"Access denied for {user['email']}. This email is not in the authorized user list."
         )
+        st.button("Log out", on_click=st.logout)
+        st.stop()
 
-    with st.sidebar:
-        st.markdown("### 👤 Account")
-        if st.session_state.get("auth_photo_url"):
-            st.image(st.session_state.auth_photo_url, width=80)
-
-        st.write(f"**{st.session_state.get('auth_name', 'User')}**")
-        st.caption(st.session_state.get("auth_email", ""))
-
-        if st.button(
-            "🚪 Logout",
-            use_container_width=True,
-            key="auth_logout_button",
-        ):
-            sign_out_user(token)
-            for key in [
-                "auth_access_token",
-                "auth_user_id",
-                "auth_email",
-                "auth_name",
-                "auth_photo_url",
-            ]:
-                st.session_state.pop(key, None)
-            st.rerun()
-
-    return {
-        "id": user_id,
-        "email": st.session_state.get("auth_email", ""),
-        "name": st.session_state.get("auth_name", "User"),
-        "photo_url": st.session_state.get("auth_photo_url", ""),
-    }
+    st.session_state.current_user_email = user["email"]
+    st.session_state.current_user_name = user["name"]
+    return user
 
 
 # ==========================================================
@@ -2228,8 +2001,6 @@ st.markdown(
 )
 
 
-_current_user = _enforce_authentication()
-
 # ==========================================================
 # SESSION STATE
 # ==========================================================
@@ -2439,18 +2210,79 @@ def _apply_dashboard_filters(dataframe, filters):
 
 
 def _dashboard_filter_candidates(dataframe):
-    """Return useful low-cardinality fields for dashboard slicers."""
+    """
+    Automatically identify useful columns for dashboard filters.
+
+    Priority:
+    1. Categorical / text columns with reasonable unique values
+    2. Boolean columns
+    3. Date columns
+    4. Low-cardinality numeric columns
+    5. Fallback columns if no suitable fields are detected
+    """
+
     candidates = []
+    categorical_candidates = []
+    date_candidates = []
+    numeric_candidates = []
+
     for column in dataframe.columns:
-        series = dataframe[column]
-        nunique = int(series.nunique(dropna=True))
+        try:
+            series = dataframe[column]
+            nunique = int(series.nunique(dropna=True))
 
-        is_date = pd.api.types.is_datetime64_any_dtype(series)
-        is_categorical = pd.api.types.is_object_dtype(series) or pd.api.types.is_categorical_dtype(series) or pd.api.types.is_bool_dtype(series)
-        is_low_card_numeric = pd.api.types.is_numeric_dtype(series) and nunique <= 25
+            if nunique == 0:
+                continue
 
-        if (is_date or is_categorical or is_low_card_numeric) and 1 <= nunique <= 100:
-            candidates.append(column)
+            is_date = pd.api.types.is_datetime64_any_dtype(series)
+
+            is_categorical = (
+                pd.api.types.is_object_dtype(series)
+                or pd.api.types.is_categorical_dtype(series)
+                or pd.api.types.is_bool_dtype(series)
+            )
+
+            is_numeric = pd.api.types.is_numeric_dtype(series)
+
+            # TEXT / CATEGORY / BOOLEAN
+            # Keep useful business dimensions first.
+            if is_categorical:
+                if nunique <= 100:
+                    categorical_candidates.append(column)
+                elif nunique <= 500:
+                    # Secondary text fields are still useful as filters.
+                    categorical_candidates.append(column)
+
+            # DATE
+            elif is_date:
+                date_candidates.append(column)
+
+            # NUMERIC
+            elif is_numeric and nunique <= 50:
+                numeric_candidates.append(column)
+
+        except Exception:
+            continue
+
+    # Priority order: dimensions first, then dates, then numeric fields.
+    candidates.extend(categorical_candidates)
+    candidates.extend(date_candidates)
+    candidates.extend(numeric_candidates)
+    candidates = list(dict.fromkeys(candidates))
+
+    # FALLBACK:
+    # If the dataset contains no obvious low-cardinality fields, expose
+    # useful columns instead of returning an empty filter list.
+    if not candidates:
+        for column in dataframe.columns:
+            try:
+                if dataframe[column].nunique(dropna=True) > 1:
+                    candidates.append(column)
+            except Exception:
+                continue
+
+            if len(candidates) >= 12:
+                break
 
     return candidates[:12]
 
@@ -3141,14 +2973,15 @@ else:
 # MAIN APPLICATION TABS
 # ==========================================================
 
-# Keep the active dataframe available on every Streamlit rerun.
-# Streamlit reruns the entire script when a tab, button, or widget changes,
-# so relying only on the upload-processing block can leave `df` undefined.
+# Do not render the analytics tabs until a dataset has been uploaded.
+# This prevents df/column_types NameError on the initial empty workspace.
 df = st.session_state.get("df")
+if df is None or df.empty:
+    st.stop()
 
-if df is not None:
-    column_types = detect_column_types(df)
-    kpis = calculate_kpis(df)
+# Build the column classification used by the Overview tab.
+# This reuses the existing project function and does not change the dashboard/model logic.
+column_types = detect_column_types(df)
 
 tabs = st.tabs([
     "📊 Overview",
@@ -3331,6 +3164,26 @@ with tabs[1]:
         st.metric(
             "📊 Dashboard Charts",
             total_charts
+        )
+
+    st.divider()
+
+    # ======================================================
+    # DASHBOARD FILTERS
+    # ======================================================
+    # Use the same filter engine as the dedicated dashboard page.
+    # This makes filters available directly inside the main
+    # Dashboard Builder while preserving the existing multi-file
+    # upload and report-selection workflow.
+    filtered_dashboard_df, active_dashboard_filters = _render_dashboard_global_filters(df)
+
+    if active_dashboard_filters:
+        st.success(
+            f"Showing {len(filtered_dashboard_df):,} of {len(df):,} records after dashboard filters."
+        )
+    else:
+        st.caption(
+            f"Showing all {len(df):,} uploaded records. Select filters above to narrow the dashboard."
         )
 
     st.divider()
@@ -3734,7 +3587,7 @@ with tabs[1]:
                 ]:
 
                     fig = create_chart(
-                        df,
+                        filtered_dashboard_df,
                         category=chart.get(
                             "category"
                         ),
@@ -5526,6 +5379,7 @@ def _build_report_cache_signature(dataframe, sheets, questions, dashboard_url, r
         "dashboard_url": dashboard_url,
         "report_sections": report_sections or [],
         "selected_dashboard_sheets": selected_dashboard_sheets or [],
+        "dashboard_global_filters": st.session_state.get("dashboard_global_filters", {}),
         "multi_file_analysis": multi_payload,
     })
 
@@ -5697,6 +5551,13 @@ with tabs[7]:
 
                 st.session_state.pdf_questions = pdf_questions
 
+            # Calculate the KPI dictionary required by the PDF report generator.
+            # This was previously referenced as `kpis` without being initialized.
+            try:
+                kpis = calculate_kpis(df)
+            except Exception:
+                kpis = {}
+
             report_signature = _build_report_cache_signature(
                 df,
                 st.session_state.sheets,
@@ -5757,45 +5618,6 @@ with tabs[7]:
                     mime="application/pdf",
                     key="download_selected_final_pdf",
                 )
-
-            # ======================================================
-            # EMAIL FINAL PDF REPORT
-            # ======================================================
-            st.markdown("---")
-            st.markdown("### 📧 Send Final Report by Email")
-            st.caption(
-                "Send the same PDF generated above as an email attachment. "
-                "Email credentials are read securely from Streamlit Secrets."
-            )
-
-            recipient_email = st.text_input(
-                "Recipient Email",
-                placeholder="example@gmail.com",
-                key="report_recipient_email",
-            )
-
-            if st.button(
-                "📧 Send Report by Email",
-                type="primary",
-                use_container_width=True,
-                key="send_final_report_email",
-            ):
-                if not recipient_email.strip():
-                    st.warning("Please enter a recipient email address.")
-                elif not pdf_path.exists() or pdf_path.stat().st_size == 0:
-                    st.error("Please generate the PDF report before sending it by email.")
-                else:
-                    with st.spinner("Sending PDF report by email..."):
-                        email_success, email_message = send_report_email(
-                            recipient_email=recipient_email.strip(),
-                            pdf_path=str(pdf_path),
-                            subject="Data Analyzer AI - Business Analysis Report",
-                        )
-
-                    if email_success:
-                        st.success(f"✅ {email_message}")
-                    else:
-                        st.error(f"❌ {email_message}")
 
             if pdf_is_ready and cached_signature == report_signature:
                 st.success("Final report is ready. The cached PDF was reused.")
