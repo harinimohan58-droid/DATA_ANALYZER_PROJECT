@@ -72,6 +72,8 @@ from modules.report_generator import (
     generate_pdf
 )
 
+from email_service import send_report_email
+
 
 # ==========================================================
 # AUTHENTICATION / ACCESS CONTROL
@@ -2210,79 +2212,18 @@ def _apply_dashboard_filters(dataframe, filters):
 
 
 def _dashboard_filter_candidates(dataframe):
-    """
-    Automatically identify useful columns for dashboard filters.
-
-    Priority:
-    1. Categorical / text columns with reasonable unique values
-    2. Boolean columns
-    3. Date columns
-    4. Low-cardinality numeric columns
-    5. Fallback columns if no suitable fields are detected
-    """
-
+    """Return useful low-cardinality fields for dashboard slicers."""
     candidates = []
-    categorical_candidates = []
-    date_candidates = []
-    numeric_candidates = []
-
     for column in dataframe.columns:
-        try:
-            series = dataframe[column]
-            nunique = int(series.nunique(dropna=True))
+        series = dataframe[column]
+        nunique = int(series.nunique(dropna=True))
 
-            if nunique == 0:
-                continue
+        is_date = pd.api.types.is_datetime64_any_dtype(series)
+        is_categorical = pd.api.types.is_object_dtype(series) or pd.api.types.is_categorical_dtype(series) or pd.api.types.is_bool_dtype(series)
+        is_low_card_numeric = pd.api.types.is_numeric_dtype(series) and nunique <= 25
 
-            is_date = pd.api.types.is_datetime64_any_dtype(series)
-
-            is_categorical = (
-                pd.api.types.is_object_dtype(series)
-                or pd.api.types.is_categorical_dtype(series)
-                or pd.api.types.is_bool_dtype(series)
-            )
-
-            is_numeric = pd.api.types.is_numeric_dtype(series)
-
-            # TEXT / CATEGORY / BOOLEAN
-            # Keep useful business dimensions first.
-            if is_categorical:
-                if nunique <= 100:
-                    categorical_candidates.append(column)
-                elif nunique <= 500:
-                    # Secondary text fields are still useful as filters.
-                    categorical_candidates.append(column)
-
-            # DATE
-            elif is_date:
-                date_candidates.append(column)
-
-            # NUMERIC
-            elif is_numeric and nunique <= 50:
-                numeric_candidates.append(column)
-
-        except Exception:
-            continue
-
-    # Priority order: dimensions first, then dates, then numeric fields.
-    candidates.extend(categorical_candidates)
-    candidates.extend(date_candidates)
-    candidates.extend(numeric_candidates)
-    candidates = list(dict.fromkeys(candidates))
-
-    # FALLBACK:
-    # If the dataset contains no obvious low-cardinality fields, expose
-    # useful columns instead of returning an empty filter list.
-    if not candidates:
-        for column in dataframe.columns:
-            try:
-                if dataframe[column].nunique(dropna=True) > 1:
-                    candidates.append(column)
-            except Exception:
-                continue
-
-            if len(candidates) >= 12:
-                break
+        if (is_date or is_categorical or is_low_card_numeric) and 1 <= nunique <= 100:
+            candidates.append(column)
 
     return candidates[:12]
 
@@ -2973,16 +2914,6 @@ else:
 # MAIN APPLICATION TABS
 # ==========================================================
 
-# Do not render the analytics tabs until a dataset has been uploaded.
-# This prevents df/column_types NameError on the initial empty workspace.
-df = st.session_state.get("df")
-if df is None or df.empty:
-    st.stop()
-
-# Build the column classification used by the Overview tab.
-# This reuses the existing project function and does not change the dashboard/model logic.
-column_types = detect_column_types(df)
-
 tabs = st.tabs([
     "📊 Overview",
     "🛠️ Dashboard Builder",
@@ -3164,26 +3095,6 @@ with tabs[1]:
         st.metric(
             "📊 Dashboard Charts",
             total_charts
-        )
-
-    st.divider()
-
-    # ======================================================
-    # DASHBOARD FILTERS
-    # ======================================================
-    # Use the same filter engine as the dedicated dashboard page.
-    # This makes filters available directly inside the main
-    # Dashboard Builder while preserving the existing multi-file
-    # upload and report-selection workflow.
-    filtered_dashboard_df, active_dashboard_filters = _render_dashboard_global_filters(df)
-
-    if active_dashboard_filters:
-        st.success(
-            f"Showing {len(filtered_dashboard_df):,} of {len(df):,} records after dashboard filters."
-        )
-    else:
-        st.caption(
-            f"Showing all {len(df):,} uploaded records. Select filters above to narrow the dashboard."
         )
 
     st.divider()
@@ -3587,7 +3498,7 @@ with tabs[1]:
                 ]:
 
                     fig = create_chart(
-                        filtered_dashboard_df,
+                        df,
                         category=chart.get(
                             "category"
                         ),
@@ -5379,7 +5290,6 @@ def _build_report_cache_signature(dataframe, sheets, questions, dashboard_url, r
         "dashboard_url": dashboard_url,
         "report_sections": report_sections or [],
         "selected_dashboard_sheets": selected_dashboard_sheets or [],
-        "dashboard_global_filters": st.session_state.get("dashboard_global_filters", {}),
         "multi_file_analysis": multi_payload,
     })
 
@@ -5551,13 +5461,6 @@ with tabs[7]:
 
                 st.session_state.pdf_questions = pdf_questions
 
-            # Calculate the KPI dictionary required by the PDF report generator.
-            # This was previously referenced as `kpis` without being initialized.
-            try:
-                kpis = calculate_kpis(df)
-            except Exception:
-                kpis = {}
-
             report_signature = _build_report_cache_signature(
                 df,
                 st.session_state.sheets,
@@ -5618,6 +5521,45 @@ with tabs[7]:
                     mime="application/pdf",
                     key="download_selected_final_pdf",
                 )
+
+            # ======================================================
+            # EMAIL FINAL PDF REPORT
+            # ======================================================
+            st.markdown("---")
+            st.markdown("### 📧 Send Final Report by Email")
+            st.caption(
+                "Send the same PDF generated above as an email attachment. "
+                "Email credentials are read securely from Streamlit Secrets."
+            )
+
+            recipient_email = st.text_input(
+                "Recipient Email",
+                placeholder="example@gmail.com",
+                key="report_recipient_email",
+            )
+
+            if st.button(
+                "📧 Send Report by Email",
+                type="primary",
+                use_container_width=True,
+                key="send_final_report_email",
+            ):
+                if not recipient_email.strip():
+                    st.warning("Please enter a recipient email address.")
+                elif not pdf_path.exists() or pdf_path.stat().st_size == 0:
+                    st.error("Please generate the PDF report before sending it by email.")
+                else:
+                    with st.spinner("Sending PDF report by email..."):
+                        email_success, email_message = send_report_email(
+                            recipient_email=recipient_email.strip(),
+                            pdf_path=str(pdf_path),
+                            subject="Data Analyzer AI - Business Analysis Report",
+                        )
+
+                    if email_success:
+                        st.success(f"✅ {email_message}")
+                    else:
+                        st.error(f"❌ {email_message}")
 
             if pdf_is_ready and cached_signature == report_signature:
                 st.success("Final report is ready. The cached PDF was reused.")
