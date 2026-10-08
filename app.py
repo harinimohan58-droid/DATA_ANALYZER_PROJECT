@@ -76,160 +76,182 @@ from email_service import send_report_email
 
 
 # ==========================================================
-# AUTHENTICATION / ACCESS CONTROL
+# AUTHENTICATION / ACCESS CONTROL - SUPABASE
 # ==========================================================
 
-def _get_secret_section(name):
-    """Read a Streamlit secrets table without assuming it is a built-in dict."""
-    try:
-        section = st.secrets.get(name, {})
-        return section if hasattr(section, "get") else {}
-    except Exception:
-        return {}
+from auth_service import (
+    get_supabase_settings, sign_up_user, sign_in_user, get_profile,
+    upload_profile_photo, sign_out_user,
+)
 
 
-def _auth_is_configured():
-    """Return True when the complete Streamlit OIDC configuration is available."""
-    auth = _get_secret_section("auth")
-    required = (
-        "redirect_uri",
-        "cookie_secret",
-        "client_id",
-        "client_secret",
-        "server_metadata_url",
-    )
-    try:
-        return all(bool(auth.get(key)) for key in required)
-    except Exception:
-        return False
+def _render_auth_gate():
+    settings = get_supabase_settings()
+    if not settings:
+        st.error("Authentication is not configured. Add [supabase] settings in Streamlit Cloud → Settings → Secrets.")
+        st.stop()
 
-
-def _allowed_email_set():
-    """Read the allow-list used after OIDC authentication."""
-    access = _get_secret_section("access")
-    try:
-        values = access.get("allowed_emails", [])
-    except Exception:
-        values = []
-
-    if isinstance(values, str):
-        values = [values]
-
-    try:
-        return {
-            str(value).strip().lower()
-            for value in values
-            if str(value).strip()
-        }
-    except Exception:
-        return set()
-
-
-def _current_authenticated_user():
-    """Return the verified current OIDC user, or None when not logged in."""
-    try:
-        is_logged_in = bool(getattr(st.user, "is_logged_in", False))
-        if not is_logged_in:
-            return None
-
-        email = str(getattr(st.user, "email", "") or "").strip().lower()
-        name = str(getattr(st.user, "name", "") or "User").strip()
-        email_verified = getattr(st.user, "email_verified", True)
-
-        if not email:
-            return None
-
-        if isinstance(email_verified, str):
-            email_verified = email_verified.strip().lower() == "true"
-
-        return {
-            "email": email,
-            "name": name or "User",
-            "email_verified": bool(email_verified),
-        }
-    except Exception:
-        return None
-
-
-def _render_login_gate():
-    """Stop the application until the user has authenticated and is allowed."""
     st.markdown(
         """
-        <div style="max-width:760px;margin:8vh auto 0;padding:36px 40px;
-             background:#FFFFFF;border:1px solid #EEE1D6;border-radius:18px;
-             box-shadow:0 14px 40px rgba(34,48,92,.10);">
-            <div style="font-size:13px;font-weight:800;letter-spacing:.12em;
-                        text-transform:uppercase;color:#E0553F;">PRIVATE WORKSPACE</div>
-            <div style="font-size:34px;font-weight:800;color:#22305C;margin-top:8px;">
-                DATA ANALYZER
-            </div>
-            <div style="font-size:15px;color:#7C756D;margin-top:8px;line-height:1.55;">
-                Enter your email ID below, then continue with your authorized Google account.
-                Only email addresses in the configured access list can enter the application.
-            </div>
+        <div style="max-width:900px;margin:3rem auto 1rem;text-align:center;">
+            <div style="font-size:3rem;">📊</div>
+            <h1 style="color:#22305C;margin-bottom:.2rem;">Dashboard Analyzer AI</h1>
+            <p style="color:#7C756D;font-size:1.05rem;">Secure multi-user business intelligence platform</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    left, center, right = st.columns([1, 2, 1])
-    with center:
-        st.markdown("### 🔐 Sign in")
-        st.text_input(
-            "Email ID",
+    login_tab, create_tab = st.tabs(["🔐 Login", "✨ Create Account"])
+
+    with login_tab:
+        st.markdown("### Welcome back")
+        email = st.text_input("Email ID", placeholder="your-email@gmail.com", key="auth_login_email")
+        password = st.text_input("Password", type="password", key="auth_login_password")
+
+        if st.button("Login", type="primary", use_container_width=True, key="auth_login_button"):
+            if not email.strip() or not password:
+                st.warning("Please enter your email ID and password.")
+            else:
+                with st.spinner("Signing you in..."):
+                    ok, result = sign_in_user(email.strip(), password)
+                if ok:
+                    st.session_state.auth_access_token = result["access_token"]
+                    st.session_state.auth_user_id = result["user_id"]
+                    st.session_state.auth_email = result["email"]
+                    st.session_state.auth_name = result["name"]
+                    st.session_state.auth_photo_url = result.get("photo_url", "")
+                    st.rerun()
+                else:
+                    st.error(result)
+
+    with create_tab:
+        st.markdown("### Create your account")
+        st.caption("You must create an account before using the dashboard.")
+
+        photo = st.file_uploader(
+            "Profile Photo *",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="auth_profile_photo",
+        )
+        name = st.text_input(
+            "Full Name *",
+            placeholder="Enter your full name",
+            key="auth_signup_name",
+        )
+        signup_email = st.text_input(
+            "Email ID *",
             placeholder="your-email@gmail.com",
-            key="login_email_hint",
-            help="This identifies the account you intend to use. Access is granted only after the identity provider verifies the email.",
+            key="auth_signup_email",
         )
-        st.button(
-            "Continue with Google",
-            on_click=st.login,
+        signup_password = st.text_input(
+            "Password *",
+            type="password",
+            key="auth_signup_password",
+        )
+        confirm = st.text_input(
+            "Confirm Password *",
+            type="password",
+            key="auth_signup_confirm",
+        )
+
+        if st.button(
+            "Create Account",
+            type="primary",
             use_container_width=True,
-        )
-        st.caption(
-            "Your typed email is not used as authentication by itself. "
-            "The authenticated email returned by Google is checked against the allow-list."
-        )
+            key="auth_create_button",
+        ):
+            if not name.strip() or not signup_email.strip() or not photo:
+                st.warning("Full name, email and profile photo are required.")
+            elif len(signup_password) < 8:
+                st.warning("Password must contain at least 8 characters.")
+            elif signup_password != confirm:
+                st.warning("Passwords do not match.")
+            else:
+                with st.spinner("Creating your account..."):
+                    ok, result = sign_up_user(
+                        signup_email.strip(),
+                        signup_password,
+                        name.strip(),
+                    )
+
+                if ok:
+                    photo_ok, photo_result = upload_profile_photo(
+                        result["user_id"],
+                        result.get("access_token", ""),
+                        photo,
+                    )
+                    if not photo_ok:
+                        st.error(
+                            f"Account created, but photo upload failed: {photo_result}"
+                        )
+                    else:
+                        st.success(
+                            "✅ Account created successfully. "
+                            "Go to Login and sign in with your email and password."
+                        )
+                        if not result.get("access_token"):
+                            st.info(
+                                "Check your email and confirm your account before logging in."
+                            )
+                else:
+                    st.error(result)
+
     st.stop()
 
 
 def _enforce_authentication():
-    """Authenticate first, then authorize by verified email allow-list."""
-    if not _auth_is_configured():
-        st.error(
-            "Authentication is not configured correctly. Add valid [auth] and [access] "
-            "settings in Streamlit Cloud → Settings → Secrets, then reboot the app."
+    token = st.session_state.get("auth_access_token")
+    user_id = st.session_state.get("auth_user_id")
+
+    if not token or not user_id:
+        _render_auth_gate()
+
+    profile = get_profile(user_id, token)
+    if profile:
+        st.session_state.auth_name = profile.get(
+            "full_name",
+            st.session_state.get("auth_name", "User"),
         )
-        st.stop()
-
-    user = _current_authenticated_user()
-    if user is None:
-        _render_login_gate()
-
-    allowed = _allowed_email_set()
-    if not user["email_verified"]:
-        st.error("Your email address could not be verified by the identity provider.")
-        st.button("Log out", on_click=st.logout)
-        st.stop()
-
-    if not allowed:
-        st.error(
-            "No authorized email addresses are configured. Add at least one email to "
-            "[access].allowed_emails in Streamlit Secrets."
+        st.session_state.auth_email = profile.get(
+            "email",
+            st.session_state.get("auth_email", ""),
         )
-        st.button("Log out", on_click=st.logout)
-        st.stop()
-
-    if user["email"] not in allowed:
-        st.error(
-            f"Access denied for {user['email']}. This email is not in the authorized user list."
+        st.session_state.auth_photo_url = profile.get(
+            "photo_url",
+            st.session_state.get("auth_photo_url", ""),
         )
-        st.button("Log out", on_click=st.logout)
-        st.stop()
 
-    st.session_state.current_user_email = user["email"]
-    st.session_state.current_user_name = user["name"]
-    return user
+    with st.sidebar:
+        st.markdown("### 👤 Account")
+        if st.session_state.get("auth_photo_url"):
+            st.image(st.session_state.auth_photo_url, width=80)
+
+        st.write(f"**{st.session_state.get('auth_name', 'User')}**")
+        st.caption(st.session_state.get("auth_email", ""))
+
+        if st.button(
+            "🚪 Logout",
+            use_container_width=True,
+            key="auth_logout_button",
+        ):
+            sign_out_user(token)
+            for key in [
+                "auth_access_token",
+                "auth_user_id",
+                "auth_email",
+                "auth_name",
+                "auth_photo_url",
+            ]:
+                st.session_state.pop(key, None)
+            st.rerun()
+
+    return {
+        "id": user_id,
+        "email": st.session_state.get("auth_email", ""),
+        "name": st.session_state.get("auth_name", "User"),
+        "photo_url": st.session_state.get("auth_photo_url", ""),
+    }
 
 
 # ==========================================================
@@ -2003,6 +2025,8 @@ st.markdown(
 )
 
 
+_current_user = _enforce_authentication()
+
 # ==========================================================
 # SESSION STATE
 # ==========================================================
@@ -2919,9 +2943,6 @@ else:
 # so relying only on the upload-processing block can leave `df` undefined.
 df = st.session_state.get("df")
 
-# Restore derived dataframe metadata on every Streamlit rerun.
-# Widgets, tabs and buttons rerun the script, so local variables from the
-# original upload-processing block may not exist on later reruns.
 if df is not None:
     column_types = detect_column_types(df)
     kpis = calculate_kpis(df)
