@@ -79,8 +79,12 @@ from email_service import send_report_email
 # AUTHENTICATION / ACCESS CONTROL - SUPABASE
 # ==========================================================
 
+import re
 import uuid
+from pathlib import Path
+
 import requests
+import streamlit as st
 
 
 def get_supabase_settings():
