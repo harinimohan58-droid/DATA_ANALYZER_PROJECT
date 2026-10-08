@@ -2914,6 +2914,18 @@ else:
 # MAIN APPLICATION TABS
 # ==========================================================
 
+# Keep the active dataframe available on every Streamlit rerun.
+# Streamlit reruns the entire script when a tab, button, or widget changes,
+# so relying only on the upload-processing block can leave `df` undefined.
+df = st.session_state.get("df")
+
+# Restore derived dataframe metadata on every Streamlit rerun.
+# Widgets, tabs and buttons rerun the script, so local variables from the
+# original upload-processing block may not exist on later reruns.
+if df is not None:
+    column_types = detect_column_types(df)
+    kpis = calculate_kpis(df)
+
 tabs = st.tabs([
     "📊 Overview",
     "🛠️ Dashboard Builder",
