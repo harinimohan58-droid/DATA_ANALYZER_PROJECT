@@ -13,3 +13,5 @@ profile_photos/
 reports/_compact_report_assets/
 reports/dashboard_snapshot.pkl
 reports/report_cache_signature.json
+
+reports/automated_bi_report.pdf
