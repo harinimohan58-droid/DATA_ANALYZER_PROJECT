@@ -15,7 +15,6 @@ import hashlib
 import json
 import io
 import itertools
-import uuid
 
 import streamlit as st
 import pandas as pd
@@ -52,27 +51,9 @@ def _get_app_base_url():
 
 
 def _get_dashboard_url():
-    """Build a unique, shareable URL for this session's dashboard snapshot."""
-    if not st.session_state.get("dashboard_share_id"):
-        st.session_state["dashboard_share_id"] = uuid.uuid4().hex
-    share_id = str(st.session_state["dashboard_share_id"])
+    """Build the dashboard URL on the same Streamlit application origin."""
     base = _get_app_base_url()
-    return base.rstrip("/") + "/?page=dashboard&share=" + urllib.parse.quote(share_id)
-
-
-def _get_dashboard_share_id_from_url():
-    """Read and validate the opaque share token from the dashboard URL."""
-    try:
-        share_id = str(st.query_params.get("share", "")).strip()
-    except Exception:
-        try:
-            params = st.experimental_get_query_params()
-            value = params.get("share", [""])
-            share_id = str(value[0] if isinstance(value, list) else value).strip()
-        except Exception:
-            share_id = ""
-    # UUID hex tokens contain exactly 32 lowercase hexadecimal characters.
-    return share_id if re.fullmatch(r"[0-9a-f]{32}", share_id) else ""
+    return base.rstrip("/") + "/?page=dashboard"
 # Optional legacy module: not required because this app uses its built-in Ask Data engine.
 from modules.data_loader import (
     load_file,
@@ -132,7 +113,12 @@ from modules.report_generator import (
 # LOCAL EMAIL/PASSWORD AUTHENTICATION
 # ==========================================================
 
-from auth import create_account, login_user, request_password_reset_otp, reset_password_with_otp
+from auth import (
+    create_account,
+    login_user,
+    request_password_reset_otp,
+    reset_password_with_otp,
+)
 
 
 def _render_auth_gate():
@@ -178,6 +164,83 @@ def _render_auth_gate():
                     st.rerun()
                 else:
                     st.error(result)
+
+    with reset_tab:
+        st.markdown("### 🔑 Reset your password")
+        st.info(
+            "Local OTP testing mode: the OTP is displayed in this app. "
+            "No email or external API is used. The OTP expires after 10 minutes."
+        )
+
+        with st.form("auth_request_reset_otp_form"):
+            reset_email = st.text_input(
+                "Registered Email ID",
+                placeholder="your-email@gmail.com",
+                key="auth_reset_email_input",
+            )
+            request_otp_clicked = st.form_submit_button(
+                "Generate Local OTP",
+                use_container_width=True,
+            )
+
+        if request_otp_clicked:
+            ok, message = request_password_reset_otp(reset_email)
+            if ok:
+                st.session_state["auth_reset_otp_email"] = reset_email.strip().lower()
+                st.success(message)
+            else:
+                st.error(message)
+
+        st.divider()
+        st.markdown("#### Verify OTP and choose a new password")
+
+        with st.form("auth_verify_reset_otp_form"):
+            otp = st.text_input(
+                "Six-digit OTP",
+                max_chars=6,
+                key="auth_reset_otp_input",
+            )
+            new_password = st.text_input(
+                "New Password (at least 8 characters)",
+                type="password",
+                key="auth_reset_new_password_input",
+            )
+            confirm_new_password = st.text_input(
+                "Confirm New Password",
+                type="password",
+                key="auth_reset_confirm_password_input",
+            )
+            reset_password_clicked = st.form_submit_button(
+                "Reset Password",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if reset_password_clicked:
+            otp_email = st.session_state.get("auth_reset_otp_email", "")
+            if not otp_email:
+                st.error("Please enter your registered email and generate an OTP first.")
+            elif new_password != confirm_new_password:
+                st.error("The new passwords do not match.")
+            elif len(new_password) < 8:
+                st.error("The new password must contain at least 8 characters.")
+            else:
+                ok, message = reset_password_with_otp(
+                    otp_email,
+                    otp.strip(),
+                    new_password,
+                )
+                if ok:
+                    st.success(message)
+                    st.session_state.pop("auth_reset_otp_email", None)
+                    for key in (
+                        "auth_reset_otp_input",
+                        "auth_reset_new_password_input",
+                        "auth_reset_confirm_password_input",
+                    ):
+                        st.session_state.pop(key, None)
+                else:
+                    st.error(message)
 
     with create_tab:
         st.markdown("### Create your account")
@@ -230,40 +293,6 @@ def _render_auth_gate():
             else:
                 st.error(result)
 
-    with reset_tab:
-        st.markdown("### Reset your password with email OTP")
-        st.caption("A one-time code will be sent to your registered email. It expires after 10 minutes.")
-        reset_email = st.text_input("Registered Email ID", placeholder="your-email@gmail.com", key="auth_reset_email")
-        if st.button("📩 Send OTP", use_container_width=True, key="auth_send_reset_otp"):
-            ok, message = request_password_reset_otp(reset_email.strip())
-            if ok:
-                st.session_state["auth_reset_otp_email"] = reset_email.strip().lower()
-                st.success(message)
-            else:
-                st.error(message)
-
-        otp_email = st.session_state.get("auth_reset_otp_email", "")
-        if otp_email:
-            st.info(f"OTP requested for: {otp_email}")
-            otp = st.text_input("6-digit OTP", max_chars=6, key="auth_reset_otp")
-            new_password = st.text_input("New Password (minimum 8 characters)", type="password", key="auth_new_password")
-            confirm_new_password = st.text_input("Confirm New Password", type="password", key="auth_confirm_new_password")
-            if st.button("🔒 Verify OTP and Update Password", type="primary", use_container_width=True, key="auth_verify_reset_otp"):
-                if not otp.strip() or not new_password:
-                    st.warning("Enter the OTP and your new password.")
-                elif len(new_password) < 8:
-                    st.warning("New password must contain at least 8 characters.")
-                elif new_password != confirm_new_password:
-                    st.warning("The new passwords do not match.")
-                else:
-                    ok, message = reset_password_with_otp(otp_email, otp.strip(), new_password)
-                    if ok:
-                        st.success(message)
-                        for key in ("auth_reset_otp_email", "auth_reset_otp", "auth_new_password", "auth_confirm_new_password"):
-                            st.session_state.pop(key, None)
-                    else:
-                        st.error(message)
-
     st.stop()
 
 
@@ -275,16 +304,33 @@ def _enforce_authentication():
     if not user:
         _render_auth_gate()
 
+    # Profile display only: leave the existing authentication and dashboard flow unchanged.
     with st.sidebar:
         st.markdown("### 👤 Account")
-        photo = user.get("photo", "")
-        photo_path = Path(photo)
-        if photo and not photo_path.is_absolute():
-            photo_path = Path(__file__).resolve().parent / photo_path
-        if photo_path.exists():
-            st.image(str(photo_path), width=80)
 
-        st.write(f"**{user.get('full_name', 'User')}**")
+        # auth.py versions may return either photo_path or photo.
+        photo_value = user.get("photo_path") or user.get("photo") or user.get("photo_url") or ""
+        photo_path = None
+        if isinstance(photo_value, str) and photo_value.strip():
+            candidate = Path(photo_value.strip()).expanduser()
+            if not candidate.is_absolute():
+                candidate = APP_DIR / candidate
+            try:
+                if candidate.is_file():
+                    photo_path = candidate
+            except (OSError, PermissionError):
+                photo_path = None
+
+        if photo_path is not None:
+            try:
+                st.image(str(photo_path), width=100)
+            except Exception:
+                st.caption("Profile photo could not be displayed.")
+        else:
+            st.caption("No saved profile photo found for this account.")
+
+        display_name = user.get("name") or user.get("full_name") or user.get("username") or "User"
+        st.write(f"**{display_name}**")
         st.caption(user.get("email", ""))
 
         if st.button("🚪 Logout", use_container_width=True, key="auth_logout_button"):
@@ -293,10 +339,10 @@ def _enforce_authentication():
             st.rerun()
 
     return {
-        "id": user.get("user_id", ""),
+        "id": user.get("user_id", user.get("id", "")),
         "email": user.get("email", ""),
-        "name": user.get("full_name", "User"),
-        "photo_url": user.get("photo", ""),
+        "name": display_name,
+        "photo_url": photo_value,
     }
 
 
@@ -2242,21 +2288,13 @@ def _get_page_parameter():
 
 
 def _save_dashboard_snapshot(dataframe, sheets):
-    """Save this session's dashboard separately so users cannot overwrite one another."""
-    if not st.session_state.get("dashboard_share_id"):
-        st.session_state["dashboard_share_id"] = uuid.uuid4().hex
-    share_id = str(st.session_state["dashboard_share_id"])
-    if not re.fullmatch(r"[0-9a-f]{32}", share_id):
-        share_id = uuid.uuid4().hex
-        st.session_state["dashboard_share_id"] = share_id
-
-    reports_dir = REPORTS_DIR / "shared_dashboards"
+    """Save the current main-app dashboard state for the dedicated page."""
+    reports_dir = REPORTS_DIR
     reports_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_path = reports_dir / f"{share_id}.pkl"
+    snapshot_path = reports_dir / "dashboard_snapshot.pkl"
     with open(snapshot_path, "wb") as snapshot_file:
         pickle.dump(
             {
-                "share_id": share_id,
                 "df": dataframe.copy(),
                 "sheets": sheets,
                 "dataset_name": st.session_state.get("active_dataset_name", "Main-page upload"),
@@ -2857,11 +2895,7 @@ if _requested_page == "dashboard":
     # that happens to remain in its own Streamlit session state.
     dashboard_df = None
     dashboard_sheets = []
-    share_id = _get_dashboard_share_id_from_url()
-    if not share_id:
-        st.error("This dashboard link is missing a valid share token. Please open the dashboard link generated from the main app or regenerate the report.")
-        st.stop()
-    snapshot_path = REPORTS_DIR / "shared_dashboards" / f"{share_id}.pkl"
+    snapshot_path = REPORTS_DIR / "dashboard_snapshot.pkl"
 
     if snapshot_path.exists():
         try:
@@ -2882,11 +2916,15 @@ if _requested_page == "dashboard":
             )
             st.stop()
 
-    # Do not fall back to this viewer's session: that could show another dataset.
+    # Fallback only for the same session if no snapshot exists yet.
+    if dashboard_df is None:
+        dashboard_df = st.session_state.get("df")
+        dashboard_sheets = st.session_state.get("sheets", [])
+
     if dashboard_df is None:
         st.warning(
-            "This shared dashboard link is unavailable or has expired. "
-            "Ask the owner to reopen the main app and generate a new dashboard/report link."
+            "No dashboard data is available yet. "
+            "Please return to the main page and upload a dataset first."
         )
         st.markdown(
             f"[← Open Main Streamlit Application]({_get_app_base_url()})"
