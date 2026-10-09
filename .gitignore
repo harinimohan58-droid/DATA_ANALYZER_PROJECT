@@ -1,0 +1,15 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.streamlit/secrets.toml
+auth_users.db
+users.json
+email_config.json
+profiles/*
+!profiles/.gitkeep
+profile_photos/
+reports/_compact_report_assets/
+reports/dashboard_snapshot.pkl
+reports/report_cache_signature.json

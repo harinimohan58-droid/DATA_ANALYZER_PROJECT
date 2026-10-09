@@ -1,0 +1,62 @@
+[
+  {
+    "timestamp": "2026-10-09 11:00:40",
+    "email": "harinimohan58@gmail.com",
+    "action": "Dashboard opened",
+    "details": "Email access granted for the interactive dashboard."
+  },
+  {
+    "timestamp": "2026-10-09 11:01:20",
+    "email": "harinimohan58@gmail.com",
+    "action": "Dashboard opened",
+    "details": "Email access granted for the interactive dashboard."
+  },
+  {
+    "timestamp": "2026-10-09 11:02:29",
+    "email": "harinimohan58@gmail.com",
+    "action": "Chart filter changed",
+    "details": "Sheet 1: Department = Research & Development"
+  },
+  {
+    "timestamp": "2026-10-09 11:11:11",
+    "email": "harinimohan58@gmail.com",
+    "action": "Dashboard opened",
+    "details": "Email access granted for the interactive dashboard."
+  },
+  {
+    "timestamp": "2026-10-09 11:11:21",
+    "email": "harinimohan58@gmail.com",
+    "action": "Dashboard filter settings changed",
+    "details": "{\"filter_1\": {\"column\": \"JobLevel\", \"values\": []}, \"filter_2\": {\"column\": \"None\", \"values\": []}, \"filter_3\": {\"column\": \"None\", \"values\": []}}"
+  },
+  {
+    "timestamp": "2026-10-09 11:11:28",
+    "email": "harinimohan58@gmail.com",
+    "action": "Dashboard filter settings changed",
+    "details": "{\"filter_1\": {\"column\": \"JobLevel\", \"values\": [\"5\"]}, \"filter_2\": {\"column\": \"None\", \"values\": []}, \"filter_3\": {\"column\": \"None\", \"values\": []}}"
+  },
+  {
+    "timestamp": "2026-10-09 12:02:53",
+    "email": "harinimohan58@gmail.com",
+    "action": "Dashboard opened",
+    "details": "Email access granted for the interactive dashboard."
+  },
+  {
+    "timestamp": "2026-10-09 12:03:22",
+    "email": "harinimohan58@gmail.com",
+    "action": "Dashboard opened",
+    "details": "Email access granted for the interactive dashboard."
+  },
+  {
+    "timestamp": "2026-10-09 14:29:42",
+    "email": "harinimohan58@gmail.com",
+    "action": "Dashboard opened",
+    "details": "Email access granted for the interactive dashboard."
+  },
+  {
+    "timestamp": "2026-10-09 14:31:02",
+    "email": "harinimohan58@gmail.com",
+    "action": "Dashboard opened",
+    "details": "Email access granted for the interactive dashboard."
+  }
+]
