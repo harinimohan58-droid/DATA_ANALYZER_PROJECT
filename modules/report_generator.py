@@ -464,9 +464,6 @@ def generate_pdf(
     research_detail=None,
     user_analysis=None,
     dashboard_url=None,
-    report_sections=None,
-    selected_dashboard_sheets=None,
-    multi_file_analysis=None,
 ):
     """Generate a compact, professional 10–15 page management report.
 
