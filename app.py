@@ -15,7 +15,6 @@ import hashlib
 import json
 import io
 import itertools
-import uuid
 
 import streamlit as st
 import pandas as pd
@@ -52,27 +51,9 @@ def _get_app_base_url():
 
 
 def _get_dashboard_url():
-    """Build a unique, shareable URL for this session's dashboard snapshot."""
-    if not st.session_state.get("dashboard_share_id"):
-        st.session_state["dashboard_share_id"] = uuid.uuid4().hex
-    share_id = str(st.session_state["dashboard_share_id"])
+    """Build the dashboard URL on the same Streamlit application origin."""
     base = _get_app_base_url()
-    return base.rstrip("/") + "/?page=dashboard&share=" + urllib.parse.quote(share_id)
-
-
-def _get_dashboard_share_id_from_url():
-    """Read and validate the opaque share token from the dashboard URL."""
-    try:
-        share_id = str(st.query_params.get("share", "")).strip()
-    except Exception:
-        try:
-            params = st.experimental_get_query_params()
-            value = params.get("share", [""])
-            share_id = str(value[0] if isinstance(value, list) else value).strip()
-        except Exception:
-            share_id = ""
-    # UUID hex tokens contain exactly 32 lowercase hexadecimal characters.
-    return share_id if re.fullmatch(r"[0-9a-f]{32}", share_id) else ""
+    return base.rstrip("/") + "/?page=dashboard"
 # Optional legacy module: not required because this app uses its built-in Ask Data engine.
 from modules.data_loader import (
     load_file,
@@ -92,4 +73,5754 @@ from modules.analytics import (
     calculate_kpis,
     calculate_correlations,
     get_numeric_summary
+)
+
+from modules.dashboard_engine import (
+    generate_sheet_templates
+)
+
+from modules.chart_engine import (
+    create_chart
+)
+
+from modules.insight_engine import (
+    generate_insights
+)
+
+from modules.recommendation_engine import (
+    generate_recommendations
+)
+
+from modules.web_research import (
+    research_dataset,
+    get_research_sources
+)
+
+from modules.data_context import (
+    create_data_context
+)
+
+from modules.ai_analyst import (
+    ask_data_analyst
+)
+
+from modules.report_generator import (
+    generate_pdf
+)
+
+
+# ==========================================================
+# LOCAL EMAIL/PASSWORD AUTHENTICATION
+# ==========================================================
+
+from auth import create_account, login_user
+
+
+def _render_auth_gate():
+    st.markdown(
+        """
+        <div style="max-width:900px;margin:3rem auto 1rem;text-align:center;">
+            <div style="font-size:3rem;">📊</div>
+            <h1 style="color:#22305C;margin-bottom:.2rem;">Dashboard Analyzer AI</h1>
+            <p style="color:#7C756D;font-size:1.05rem;">Create an account or sign in to use the business intelligence platform.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    login_tab, create_tab = st.tabs(["🔐 Login", "✨ Create Account"])
+
+    with login_tab:
+        st.markdown("### Welcome back")
+        email = st.text_input(
+            "Email ID",
+            placeholder="your-email@gmail.com",
+            key="auth_login_email",
+        )
+        password = st.text_input(
+            "Password",
+            type="password",
+            key="auth_login_password",
+        )
+
+        if st.button(
+            "🔐 Login",
+            type="primary",
+            use_container_width=True,
+            key="auth_login_button",
+        ):
+            if not email.strip() or not password:
+                st.warning("Please enter your email ID and password.")
+            else:
+                ok, result = login_user(email.strip(), password)
+                if ok:
+                    st.session_state.authenticated = True
+                    st.session_state.auth_user = result
+                    st.rerun()
+                else:
+                    st.error(result)
+
+    with create_tab:
+        st.markdown("### Create your account")
+        st.caption("Create an email/password account before using the dashboard.")
+
+        name = st.text_input(
+            "Full Name *",
+            placeholder="Enter your full name",
+            key="auth_signup_name",
+        )
+        signup_email = st.text_input(
+            "Email ID *",
+            placeholder="your-email@gmail.com",
+            key="auth_signup_email",
+        )
+        signup_password = st.text_input(
+            "Password *",
+            type="password",
+            key="auth_signup_password",
+        )
+        confirm = st.text_input(
+            "Confirm Password *",
+            type="password",
+            key="auth_signup_confirm",
+        )
+        photo = st.file_uploader(
+            "Profile Photo *",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="auth_profile_photo",
+        )
+
+        if photo:
+            st.image(photo, caption="Profile Photo Preview", width=150)
+
+        if st.button(
+            "✨ Create Account",
+            type="primary",
+            use_container_width=True,
+            key="auth_create_button",
+        ):
+            ok, result = create_account(
+                name,
+                signup_email,
+                signup_password,
+                confirm,
+                photo,
+            )
+            if ok:
+                st.success("✅ Account created successfully. Go to Login and sign in with your email and password.")
+            else:
+                st.error(result)
+
+    st.stop()
+
+
+def _enforce_authentication():
+    if not st.session_state.get("authenticated", False):
+        _render_auth_gate()
+
+    user = st.session_state.get("auth_user", {})
+    if not user:
+        _render_auth_gate()
+
+    # Profile display only: leave the existing authentication and dashboard flow unchanged.
+    with st.sidebar:
+        st.markdown("### 👤 Account")
+
+        # auth.py versions may return either photo_path or photo.
+        photo_value = user.get("photo_path") or user.get("photo") or user.get("photo_url") or ""
+        photo_path = None
+        if isinstance(photo_value, str) and photo_value.strip():
+            candidate = Path(photo_value.strip()).expanduser()
+            if not candidate.is_absolute():
+                candidate = APP_DIR / candidate
+            try:
+                if candidate.is_file():
+                    photo_path = candidate
+            except (OSError, PermissionError):
+                photo_path = None
+
+        if photo_path is not None:
+            try:
+                st.image(str(photo_path), width=100)
+            except Exception:
+                st.caption("Profile photo could not be displayed.")
+        else:
+            st.caption("No saved profile photo found for this account.")
+
+        display_name = user.get("name") or user.get("full_name") or user.get("username") or "User"
+        st.write(f"**{display_name}**")
+        st.caption(user.get("email", ""))
+
+        if st.button("🚪 Logout", use_container_width=True, key="auth_logout_button"):
+            st.session_state.pop("authenticated", None)
+            st.session_state.pop("auth_user", None)
+            st.rerun()
+
+    return {
+        "id": user.get("user_id", user.get("id", "")),
+        "email": user.get("email", ""),
+        "name": display_name,
+        "photo_url": photo_value,
+    }
+
+
+# ==========================================================
+# ROBUST MULTI-FILE LOADING / CORRELATION
+# ==========================================================
+
+class _NamedBytesIO(io.BytesIO):
+    """BytesIO that retains the original filename for the existing loader."""
+    def __init__(self, data, name):
+        super().__init__(data)
+        self.name = name
+
+
+def _read_uploaded_dataframe(uploaded_file):
+    """Read a Streamlit UploadedFile safely from fresh bytes on every call."""
+    if uploaded_file is None:
+        raise ValueError("No file was provided.")
+
+    raw = uploaded_file.getvalue()
+    if not raw:
+        raise ValueError(f"'{getattr(uploaded_file, 'name', 'file')}' is empty.")
+
+    buffer = _NamedBytesIO(raw, getattr(uploaded_file, "name", "uploaded.csv"))
+    df = load_file(buffer)
+    return convert_date_columns(df)
+
+
+def _multi_file_signature(uploaded_files, sheet_count):
+    """Build a stable signature for uploaded files and dashboard setting."""
+    return tuple(
+        (
+            str(getattr(f, "name", "")),
+            int(getattr(f, "size", 0) or 0),
+            hashlib.md5(f.getvalue()).hexdigest(),
+        )
+        for f in (uploaded_files or [])
+    ) + (int(sheet_count),)
+
+
+def _build_multi_file_analysis(uploaded_files):
+    """Load every file once and create pairwise profile comparisons."""
+    frames = []
+    errors = []
+
+    for uploaded_file in uploaded_files or []:
+        name = str(getattr(uploaded_file, "name", "Unnamed file"))
+        try:
+            frame = _read_uploaded_dataframe(uploaded_file)
+            if frame.empty or frame.shape[1] == 0:
+                raise ValueError("The file contains no usable columns or rows.")
+            frames.append({"name": name, "df": frame})
+        except Exception as exc:
+            errors.append({"name": name, "error": str(exc)})
+
+    pair_rows = []
+    for left, right in itertools.combinations(frames, 2):
+        left_df = left["df"]
+        right_df = right["df"]
+        common_columns = [c for c in left_df.columns if c in set(right_df.columns)]
+        common_numeric = [
+            c for c in common_columns
+            if pd.api.types.is_numeric_dtype(left_df[c])
+            and pd.api.types.is_numeric_dtype(right_df[c])
+        ]
+
+        correlations = []
+        for col in common_numeric:
+            a = pd.to_numeric(left_df[col], errors="coerce").dropna()
+            b = pd.to_numeric(right_df[col], errors="coerce").dropna()
+            if not a.empty and not b.empty:
+                correlations.append(
+                    {
+                        "column": col,
+                        "left_mean": float(a.mean()),
+                        "right_mean": float(b.mean()),
+                    }
+                )
+
+        profile_corr = None
+        if len(correlations) >= 2:
+            aligned = pd.DataFrame(correlations)
+            profile_corr = aligned["left_mean"].corr(aligned["right_mean"])
+            if pd.isna(profile_corr):
+                profile_corr = None
+            else:
+                profile_corr = float(profile_corr)
+
+        pair_rows.append(
+            {
+                "File A": left["name"],
+                "File B": right["name"],
+                "Common Columns": len(common_columns),
+                "Common Numeric Columns": len(common_numeric),
+                "Profile Correlation": (
+                    round(profile_corr, 3) if profile_corr is not None else "N/A"
+                ),
+                "Comparable Fields": ", ".join(map(str, common_numeric[:8])) or "None",
+            }
+        )
+
+    compatible_schema = bool(frames) and all(
+        list(frame["df"].columns) == list(frames[0]["df"].columns)
+        for frame in frames
+    )
+
+    combined_df = None
+    if frames and compatible_schema:
+        combined_df = pd.concat(
+            [item["df"] for item in frames],
+            ignore_index=True,
+        )
+
+    return {
+        "frames": frames,
+        "errors": errors,
+        "pair_rows": pair_rows,
+        "pair_count": len(frames) * (len(frames) - 1) // 2,
+        "file_count": len(frames),
+        "compatible_schema": compatible_schema,
+        "combined_df": combined_df,
+    }
+
+
+def _render_multi_file_analysis(analysis):
+    """Display non-destructive multi-file comparison results."""
+    if not analysis:
+        return
+
+    frames = analysis.get("frames", [])
+    pair_rows = analysis.get("pair_rows", [])
+    errors = analysis.get("errors", [])
+
+    if len(frames) <= 1 and not errors:
+        return
+
+    st.markdown("## 🔗 Multi-File Analysis")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Files Loaded", analysis.get("file_count", 0))
+    m2.metric("Automatic Pairwise Comparisons", analysis.get("pair_count", 0))
+    m3.metric(
+        "Shared Schema",
+        "Yes" if analysis.get("compatible_schema") else "No / Mixed",
+    )
+
+    summary_rows = [
+        {
+            "File": item["name"],
+            "Rows": len(item["df"]),
+            "Columns": len(item["df"].columns),
+            "Numeric Columns": len(item["df"].select_dtypes(include="number").columns),
+            "Status": "Loaded",
+        }
+        for item in frames
+    ]
+    if summary_rows:
+        st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    if pair_rows:
+        st.markdown("### Pairwise Correlation / Comparison")
+        st.dataframe(pd.DataFrame(pair_rows), use_container_width=True, hide_index=True)
+
+    if errors:
+        st.warning("Some uploaded files could not be processed:")
+        st.dataframe(pd.DataFrame(errors), use_container_width=True, hide_index=True)
+
+
+# ==========================================================
+# AUTHENTICATION GATE
+# ==========================================================
+
+# ==========================================================
+# PROFESSIONAL DATA-DRIVEN BUSINESS QUESTION GENERATOR
+# ==========================================================
+
+def _pretty_column_name(column):
+    """Turn a dataframe column name into a user-friendly business label."""
+    text = re.sub(r"[_\\-]+", " ", str(column)).strip()
+    text = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", text)
+    return text.strip().title()
+
+
+def _question_column(columns, keywords, excluded=None):
+    """Find the most relevant real column using keyword matching."""
+    excluded = set(excluded or [])
+    candidates = []
+    for column in columns:
+        if column in excluded:
+            continue
+        name = str(column).lower().replace("_", " ").replace("-", " ")
+        score = sum(1 for keyword in keywords if keyword in name)
+        if score:
+            candidates.append((score, len(name), column))
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: (-x[0], x[1]))
+    return candidates[0][2]
+
+
+def _detect_question_domain(df):
+    """Use the same data-driven domain classification as the research engine."""
+    detected = _detect_business_domain(df) if "_detect_business_domain" in globals() else "General Business Analytics"
+    mapping = {
+        "Short-Term Lending / Loan Analytics": "Finance / Loan Analytics",
+        "Banking / Financial Services": "Finance / Loan Analytics",
+        "Insurance Analytics": "Insurance Analytics",
+        "Marketing / Campaign Analytics": "Marketing / Customer Analytics",
+        "Retail / Sales Analytics": "Retail / Sales Analytics",
+        "Manufacturing Analytics": "Manufacturing Analytics",
+        "Healthcare Analytics": "Healthcare Analytics",
+        "Education Analytics": "Education Analytics",
+        "Telecom Analytics": "Telecom / Churn Analytics",
+        "Human Resources / Workforce Analytics": "Human Resources / Workforce Analytics",
+    }
+    return mapping.get(detected, "General Business Analytics")
+
+def generate_data_questions(df):
+    """Generate professional, business-oriented questions from the actual schema.
+
+    The questions intentionally avoid generic dataframe questions such as
+    record count, column count, average age, or list-all-categories. They are
+    built from real columns, business-domain signals, relationships, segments,
+    trends, and decision-oriented analysis opportunities in the uploaded data.
+    """
+    if df is None or df.empty:
+        return [
+            "What business pattern should be investigated first in this dataset?",
+            "Which available customer, product, employee, or transaction segment shows the strongest business signal?",
+            "What relationships between the available measures could support a business decision?",
+        ]
+
+    columns = list(df.columns)
+    numeric = df.select_dtypes(include="number").columns.tolist()
+    categorical = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+    dates = df.select_dtypes(include=["datetime64[ns]", "datetime64[ns, UTC]"]).columns.tolist()
+    domain = _detect_question_domain(df)
+
+    questions = []
+
+    # -----------------------------
+    # Identify useful business fields
+    # -----------------------------
+    income = _question_column(columns, ["income", "salary", "revenue", "sales", "amount", "balance"])
+    outcome = _question_column(columns, [
+        "loan", "account", "attrition", "churn", "default", "fraud",
+        "response", "conversion", "purchase", "profit", "sales", "revenue"
+    ])
+    customer = _question_column(columns, ["customer", "client", "member", "account holder"])
+    product = _question_column(columns, ["product", "item", "category", "service"])
+    geography = _question_column(columns, ["region", "city", "state", "country", "location", "branch", "territory"])
+    demographic = _question_column(columns, ["age", "gender", "marital", "qualification", "education"])
+    department = _question_column(columns, ["department", "job role", "jobrole", "team", "division"])
+    time_col = dates[0] if dates else _question_column(columns, ["date", "year", "month", "quarter", "week"])
+
+    # High-cardinality identifiers are generally not useful as business dimensions.
+    categorical_business = [
+        c for c in categorical
+        if df[c].nunique(dropna=True) <= max(2, min(100, len(df) * 0.25))
+    ]
+
+    # -----------------------------
+    # Domain-specific questions
+    # -----------------------------
+    if domain == "Finance / Loan Analytics":
+        if outcome and income:
+            questions.append(
+                f"How does {_pretty_column_name(outcome)} participation vary across {_pretty_column_name(income)} levels?"
+            )
+        if outcome and demographic:
+            questions.append(
+                f"Which {_pretty_column_name(demographic)} segments show the highest concentration of {_pretty_column_name(outcome)}?"
+            )
+        if income and demographic:
+            questions.append(
+                f"How does {_pretty_column_name(income)} differ across {_pretty_column_name(demographic)} groups?"
+            )
+        if outcome:
+            questions.append(
+                f"Which customer characteristics distinguish records with and without {_pretty_column_name(outcome)}?"
+            )
+        if geography and outcome:
+            questions.append(
+                f"Which {_pretty_column_name(geography)} segments have the highest concentration of {_pretty_column_name(outcome)}?"
+            )
+        if income and categorical_business:
+            c = categorical_business[0]
+            if c not in {outcome, demographic, geography}:
+                questions.append(
+                    f"Which {_pretty_column_name(c)} groups have the highest average {_pretty_column_name(income)}?"
+                )
+        questions.extend([
+            "Which customer segments appear most relevant for further financial-product analysis?",
+            "Are there customer groups with relatively strong financial characteristics but comparatively low product participation?",
+            "What combination of demographic and financial characteristics should be investigated for customer segmentation?",
+        ])
+
+    elif domain == "Human Resources / Workforce Analytics":
+        attrition = _question_column(columns, ["attrition", "left", "turnover", "exit"])
+        salary = _question_column(columns, ["salary", "income", "compensation", "wage"])
+        satisfaction = _question_column(columns, ["satisfaction", "engagement", "environment"])
+        if attrition and department:
+            questions.append(
+                f"Which {_pretty_column_name(department)} groups show the highest concentration of {_pretty_column_name(attrition)}?"
+            )
+        if attrition and salary:
+            questions.append(
+                f"How does {_pretty_column_name(attrition)} vary across {_pretty_column_name(salary)} levels?"
+            )
+        if attrition and satisfaction:
+            questions.append(
+                f"What relationship exists between {_pretty_column_name(satisfaction)} and {_pretty_column_name(attrition)}?"
+            )
+        if department and salary:
+            questions.append(
+                f"Which {_pretty_column_name(department)} groups have the highest average {_pretty_column_name(salary)}?"
+            )
+        questions.extend([
+            "Which employee segments should be investigated further for retention or workforce-planning decisions?",
+            "What employee characteristics are most strongly associated with the key workforce outcome in this dataset?",
+            "Which workforce groups show patterns that may require management attention?",
+        ])
+
+    elif domain == "Marketing / Customer Analytics":
+        conversion = _question_column(columns, ["conversion", "response", "purchase", "converted"])
+        campaign = _question_column(columns, ["campaign", "channel", "source", "medium"])
+        if campaign and conversion:
+            questions.append(
+                f"Which {_pretty_column_name(campaign)} groups are associated with the strongest {_pretty_column_name(conversion)} performance?"
+            )
+        if customer and conversion:
+            questions.append(
+                f"Which customer characteristics are associated with {_pretty_column_name(conversion)}?"
+            )
+        if income and conversion:
+            questions.append(
+                f"How does {_pretty_column_name(conversion)} vary across {_pretty_column_name(income)} levels?"
+            )
+        questions.extend([
+            "Which customer segments should be investigated for targeted campaign opportunities?",
+            "Which marketing or customer attributes appear most relevant to the observed response or conversion outcome?",
+            "Are there customer groups with strong engagement but comparatively weak conversion that require further investigation?",
+        ])
+
+    elif domain == "Retail / Sales Analytics":
+        metric = _question_column(columns, ["sales", "revenue", "profit", "amount"])
+        if product and metric:
+            questions.append(
+                f"Which {_pretty_column_name(product)} groups contribute the most {_pretty_column_name(metric)}?"
+            )
+        if geography and metric:
+            questions.append(
+                f"Which {_pretty_column_name(geography)} areas contribute most to {_pretty_column_name(metric)}?"
+            )
+        if time_col and metric:
+            questions.append(
+                f"What trend is visible in {_pretty_column_name(metric)} over {_pretty_column_name(time_col)}?"
+            )
+        if customer and metric:
+            questions.append(
+                f"Which customer segments contribute the highest {_pretty_column_name(metric)}?"
+            )
+        questions.extend([
+            "Which products or customer segments should be investigated for growth opportunities?",
+            "Where are the strongest and weakest business-performance patterns across the available sales dimensions?",
+            "Which segments show high activity but comparatively weak financial performance?",
+        ])
+
+    elif domain == "Healthcare Analytics":
+        outcome_health = _question_column(columns, ["diagnosis", "treatment", "outcome", "readmission", "discharge"])
+        if outcome_health and demographic:
+            questions.append(
+                f"How does {_pretty_column_name(outcome_health)} vary across {_pretty_column_name(demographic)} groups?"
+            )
+        if outcome_health and geography:
+            questions.append(
+                f"Which {_pretty_column_name(geography)} groups show the strongest concentration of {_pretty_column_name(outcome_health)}?"
+            )
+        questions.extend([
+            "Which patient segments show patterns that require further clinical or operational investigation?",
+            "What demographic or service-related characteristics are associated with the observed patient outcomes?",
+        ])
+
+    elif domain == "Education Analytics":
+        score = _question_column(columns, ["score", "marks", "grade", "result", "percentage"])
+        attendance = _question_column(columns, ["attendance", "absence", "present"])
+        if score and attendance:
+            questions.append(
+                f"What relationship exists between {_pretty_column_name(attendance)} and {_pretty_column_name(score)}?"
+            )
+        if score and demographic:
+            questions.append(
+                f"How does {_pretty_column_name(score)} vary across {_pretty_column_name(demographic)} groups?"
+            )
+        questions.extend([
+            "Which student segments show patterns that require academic support or further investigation?",
+            "Which available factors are most closely associated with student performance?",
+        ])
+
+    elif domain == "Manufacturing Analytics":
+        defect = _question_column(columns, ["defect", "failure", "quality", "rejection"])
+        machine = _question_column(columns, ["machine", "line", "equipment", "plant"])
+        if defect and machine:
+            questions.append(
+                f"Which {_pretty_column_name(machine)} groups have the highest concentration of {_pretty_column_name(defect)}?"
+            )
+        if defect and numeric:
+            metric = next((c for c in numeric if c != defect), None)
+            if metric:
+                questions.append(
+                    f"How does {_pretty_column_name(defect)} vary with {_pretty_column_name(metric)}?"
+                )
+        questions.extend([
+            "Which production segments should be investigated for quality or operational improvement?",
+            "Which available operating factors are most associated with the observed quality outcome?",
+        ])
+
+    elif domain == "Telecom / Churn Analytics":
+        churn = _question_column(columns, ["churn", "attrition", "left"])
+        tenure = _question_column(columns, ["tenure", "months", "duration"])
+        contract = _question_column(columns, ["contract", "plan", "service"])
+        if churn and tenure:
+            questions.append(
+                f"How does {_pretty_column_name(churn)} vary across {_pretty_column_name(tenure)} levels?"
+            )
+        if churn and contract:
+            questions.append(
+                f"Which {_pretty_column_name(contract)} groups show the highest concentration of {_pretty_column_name(churn)}?"
+            )
+        questions.extend([
+            "Which customer segments should be investigated for retention opportunities?",
+            "What customer characteristics are most associated with the observed churn pattern?",
+        ])
+
+    # -----------------------------
+    # Universal relationship questions
+    # -----------------------------
+    if len(numeric) >= 2:
+        questions.append(
+            f"What relationship exists between {_pretty_column_name(numeric[0])} and {_pretty_column_name(numeric[1])}, and why might it matter for the business?"
+        )
+
+    if categorical_business and numeric:
+        c = categorical_business[0]
+        m = numeric[0]
+        questions.append(
+            f"Which {_pretty_column_name(c)} segments have the highest average {_pretty_column_name(m)}?"
+        )
+
+    if time_col and numeric:
+        m = numeric[0]
+        questions.append(
+            f"What important trend or change is visible in {_pretty_column_name(m)} over {_pretty_column_name(time_col)}?"
+        )
+
+    # Add a data-quality/business-risk question only when the data actually has an issue.
+    if int(df.isna().sum().sum()) > 0:
+        questions.append(
+            "Which missing-data areas could affect the reliability of the business analysis?"
+        )
+
+    if int(df.duplicated().sum()) > 0:
+        questions.append(
+            "Could duplicate records materially affect the business metrics or segment analysis?"
+        )
+
+    # Final fallback for unusual datasets.
+    if not questions:
+        questions = [
+            "Which available business dimension shows the strongest difference in the main numeric measures?",
+            "What relationships between the available fields could explain an important business pattern?",
+            "Which segment or group should be investigated further based on the observed data?",
+        ]
+
+    # Remove duplicates while preserving the order of business relevance.
+    cleaned = []
+    seen = set()
+    for question in questions:
+        q = re.sub(r"\\s+", " ", question).strip()
+        key = q.lower()
+        if q and key not in seen:
+            seen.add(key)
+            cleaned.append(q)
+
+    return cleaned[:16]
+
+
+# ==========================================================
+# ONLINE BASIC DATA EXPLANATION
+# ==========================================================
+
+class _SearchResultParser(HTMLParser):
+    """Small dependency-free parser for DuckDuckGo HTML results."""
+
+    def __init__(self):
+        super().__init__()
+        self.results = []
+        self._current = None
+        self._capture_title = False
+        self._capture_snippet = False
+        self._title_parts = []
+        self._snippet_parts = []
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        classes = attrs.get("class", "")
+        if tag == "a" and "result__a" in classes:
+            self._capture_title = True
+            self._title_parts = []
+            self._current = {
+                "title": "",
+                "url": attrs.get("href", "")
+            }
+        elif tag in ("a", "div") and "result__snippet" in classes:
+            self._capture_snippet = True
+            self._snippet_parts = []
+
+    def handle_data(self, data):
+        if self._capture_title:
+            self._title_parts.append(data)
+        if self._capture_snippet:
+            self._snippet_parts.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._capture_title:
+            self._capture_title = False
+            if self._current is not None:
+                self._current["title"] = " ".join(
+                    self._title_parts
+                ).strip()
+
+        if self._capture_snippet and tag in ("a", "div"):
+            self._capture_snippet = False
+            if self._current is not None:
+                self._current["snippet"] = " ".join(
+                    self._snippet_parts
+                ).strip()
+
+                if self._current.get("title"):
+                    self.results.append(self._current)
+
+                self._current = None
+
+
+def _clean_text(value):
+    value = html.unescape(str(value or ""))
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _search_web(query, max_results=5):
+    """Run a lightweight public web search without requiring an API key."""
+    try:
+        encoded = urllib.parse.urlencode({"q": query})
+        url = f"https://html.duckduckgo.com/html/?{encoded}"
+
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+
+        with urllib.request.urlopen(
+            request,
+            timeout=8
+        ) as response:
+
+            content = response.read().decode(
+                "utf-8",
+                errors="ignore"
+            )
+
+        parser = _SearchResultParser()
+        parser.feed(content)
+
+        cleaned = []
+        seen = set()
+
+        for item in parser.results:
+
+            title = _clean_text(
+                item.get("title")
+            )
+
+            snippet = _clean_text(
+                item.get("snippet")
+            )
+
+            raw_url = item.get(
+                "url",
+                ""
+            )
+
+            match = re.search(
+                r"uddg=([^&]+)",
+                raw_url
+            )
+
+            if match:
+                raw_url = urllib.parse.unquote(
+                    match.group(1)
+                )
+
+            if not raw_url.startswith("http"):
+                continue
+
+            key = raw_url.split("#")[0]
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            cleaned.append(
+                {
+                    "title": title or "Web source",
+                    "url": raw_url,
+                    "snippet": snippet
+                }
+            )
+
+            if len(cleaned) >= max_results:
+                break
+
+        return cleaned
+
+    except Exception:
+        return []
+
+
+def _detect_business_domain(df):
+    """Detect the business domain from specific combinations of real fields.
+
+    Generic fields such as Income, Amount, Customer or Status are deliberately
+    given little/no weight by themselves so unrelated datasets are not
+    incorrectly classified as HR or finance.
+    """
+    names = {_bi_norm(c) for c in df.columns}
+    joined = " | ".join(sorted(names))
+
+    signatures = {
+        "Short-Term Lending / Loan Analytics": [
+            ("loan amount", 7), ("interest rate", 7), ("credit score", 7),
+            ("loan status", 7), ("loan term", 6), ("emi", 6),
+            ("repayment", 5), ("borrower", 5), ("default", 5), ("loan", 4),
+        ],
+        "Banking / Financial Services": [
+            ("account number", 6), ("account", 4), ("transaction", 5),
+            ("deposit", 5), ("withdrawal", 5), ("balance", 4),
+            ("bank", 4), ("payment", 3),
+        ],
+        "Insurance Analytics": [
+            ("policy number", 6), ("policy", 5), ("premium", 5),
+            ("claim", 5), ("coverage", 5), ("insurance", 5),
+        ],
+        "Marketing / Campaign Analytics": [
+            ("campaign", 6), ("conversion", 6), ("click", 5),
+            ("impression", 5), ("lead", 5), ("response", 4),
+            ("channel", 3), ("marketing", 5),
+        ],
+        "Retail / Sales Analytics": [
+            ("retail sales", 7), ("warehouse sales", 7), ("retail transfers", 7),
+            ("revenue", 5), ("sales", 4), ("product", 3), ("quantity", 3),
+            ("order", 3), ("profit", 4),
+        ],
+        "Manufacturing Analytics": [
+            ("machine", 6), ("production", 6), ("defect", 6),
+            ("maintenance", 5), ("downtime", 5), ("quality", 4),
+            ("temperature", 4), ("pressure", 4),
+        ],
+        "Healthcare Analytics": [
+            ("patient", 6), ("diagnosis", 6), ("hospital", 6),
+            ("admission", 5), ("discharge", 5), ("treatment", 5),
+            ("disease", 5), ("medical", 5),
+        ],
+        "Education Analytics": [
+            ("student", 6), ("grade", 5), ("marks", 5),
+            ("attendance", 5), ("course", 4), ("exam", 4),
+            ("education", 5),
+        ],
+        "Telecom Analytics": [
+            ("churn", 6), ("contract", 5), ("internet service", 5),
+            ("monthly charges", 5), ("phone service", 5), ("tenure", 3),
+        ],
+        "Human Resources / Workforce Analytics": [
+            ("employee", 7), ("attrition", 7), ("job role", 6),
+            ("years at company", 7), ("monthly income", 6), ("overtime", 5),
+            ("employee number", 7), ("hire date", 6),
+        ],
+    }
+
+    scored = []
+    for domain, rules in signatures.items():
+        score = 0
+        matched = []
+        for phrase, weight in rules:
+            p = _bi_norm(phrase)
+            if p in names or p in joined:
+                score += weight
+                matched.append(p)
+        scored.append((score, len(matched), domain, matched))
+
+    scored.sort(reverse=True)
+    if not scored or scored[0][0] < 6:
+        return "General Business Analytics"
+
+    top = scored[0]
+    second = scored[1] if len(scored) > 1 else (0, 0, "", [])
+    # Require a meaningful lead where multiple domains have signals.
+    if top[0] >= 7 and (top[0] - second[0] >= 2 or top[1] >= 2):
+        return top[2]
+
+    return top[2] if top[0] >= 10 else "General Business Analytics"
+
+def _column_local_explanation(column, dtype):
+    """Safe explanation when an exact online definition is not found."""
+
+    name = str(column)
+
+    n = (
+        name
+        .lower()
+        .replace("_", " ")
+        .strip()
+    )
+
+    known = {
+
+        "year":
+            "Calendar year associated with the record.",
+
+        "month":
+            "Month associated with the record.",
+
+        "supplier":
+            "Supplier or vendor associated with the product or record.",
+
+        "item code":
+            "Identifier used to distinguish a product/item.",
+
+        "item description":
+            "Text description or name of the product/item.",
+
+        "item type":
+            "Category or type assigned to the product/item.",
+
+        "retail sales":
+            "Retail sales quantity/value recorded for the product, depending on the dataset's unit definition.",
+
+        "retail transfers":
+            "Quantity/value associated with transfers to retail locations or operations, depending on the source definition.",
+
+        "warehouse sales":
+            "Sales quantity/value associated with warehouse operations, depending on the source definition.",
+
+        "product":
+            "Product or item associated with the record.",
+
+        "quantity":
+            "Number of units/items associated with the record.",
+
+        "sales":
+            "Sales measure recorded for the transaction, product, period, or business unit.",
+
+        "revenue":
+            "Revenue or monetary sales amount associated with the record.",
+
+        "price":
+            "Price or monetary amount associated with the product or transaction.",
+
+        "customer":
+            "Customer identifier or customer-related information.",
+
+        "order date":
+            "Date on which the order was placed.",
+    }
+
+    if n in known:
+        return known[n]
+
+    if dtype.startswith("datetime"):
+        return (
+            "Date/time field that can be used for "
+            "time-based analysis and trends."
+        )
+
+    if (
+        dtype.startswith("int")
+        or dtype.startswith("float")
+    ):
+        return (
+            "Numeric field that can be summarized, "
+            "compared, grouped, or used as a business metric."
+        )
+
+    if dtype == "bool":
+        return (
+            "Boolean field representing a true/false "
+            "or yes/no condition."
+        )
+
+    return (
+        "Categorical/text field that can be used to "
+        "group, filter, compare, or describe records."
+    )
+
+
+def generate_basic_data_explanation(df):
+    """Research the uploaded dataset/domain online and explain the actual data."""
+
+    domain = _detect_business_domain(df)
+
+    columns = list(df.columns)
+
+    column_text = ", ".join(
+        str(c)
+        for c in columns[:12]
+    )
+
+    queries = []
+
+    names_lower = " ".join(
+        str(c).lower()
+        for c in columns
+    )
+
+    if all(
+        x in names_lower
+        for x in [
+            "retail sales",
+            "retail transfers",
+            "warehouse sales"
+        ]
+    ):
+
+        queries.append(
+            '"RETAIL SALES" '
+            '"RETAIL TRANSFERS" '
+            '"WAREHOUSE SALES" dataset'
+        )
+
+    queries.append(
+        f'"{domain}" dataset column definitions {column_text}'
+    )
+
+    research_terms = {
+        "Short-Term Lending / Loan Analytics": "loan approval credit risk repayment default interest rate",
+        "Banking / Financial Services": "banking transaction account balance payment risk analytics",
+        "Insurance Analytics": "insurance policy premium claims coverage risk analytics",
+        "Marketing / Campaign Analytics": "campaign conversion customer response channel marketing analytics",
+        "Retail / Sales Analytics": "sales revenue product demand inventory retail analytics",
+        "Manufacturing Analytics": "production quality defects machine downtime manufacturing analytics",
+        "Healthcare Analytics": "patient treatment diagnosis hospital healthcare analytics",
+        "Education Analytics": "student performance attendance grades education analytics",
+        "Telecom Analytics": "customer churn telecom contract service analytics",
+        "Human Resources / Workforce Analytics": "employee attrition workforce job role retention analytics",
+    }.get(domain, "business performance analytics trends segmentation")
+
+    queries.append(
+        f'{domain} data analytics business uses {research_terms}'
+    )
+
+    all_results = []
+    seen_urls = set()
+
+    for query in queries:
+
+        for result in _search_web(
+            query,
+            max_results=5
+        ):
+
+            if result["url"] not in seen_urls:
+
+                seen_urls.add(
+                    result["url"]
+                )
+
+                all_results.append(
+                    result
+                )
+
+            if len(all_results) >= 10:
+                break
+
+        if len(all_results) >= 10:
+            break
+
+    online_text = []
+
+    for result in all_results[:5]:
+
+        if result.get("snippet"):
+            online_text.append(
+                result["snippet"]
+            )
+
+    exact_source_match = None
+
+    if all(
+        x in names_lower
+        for x in [
+            "retail sales",
+            "retail transfers",
+            "warehouse sales"
+        ]
+    ):
+
+        for result in all_results:
+
+            text = (
+                result.get("title", "")
+                + " "
+                + result.get("snippet", "")
+            ).lower()
+
+            if (
+                "warehouse and retail sales" in text
+                or "montgomery" in text
+            ):
+
+                exact_source_match = result
+                break
+
+    if exact_source_match:
+
+        dataset_description = (
+            "The uploaded columns closely match the publicly documented "
+            "Warehouse and Retail Sales dataset structure. The published "
+            "documentation describes sales and movement data by item and "
+            "department, with fields such as supplier, item code, item type, "
+            "retail sales, retail transfers and warehouse sales. "
+            "The exact meaning and unit should still be treated according "
+            "to the identified source documentation."
+        )
+
+    else:
+
+        dataset_description = (
+            f"The uploaded file appears to be a "
+            f"{domain.lower()} dataset "
+            f"with {len(df):,} records and {len(columns)} columns. "
+            "The explanation below combines the actual structure of the "
+            "uploaded file with publicly available information found online. "
+            "Where an exact source definition could not be verified, the app "
+            "labels the meaning as an interpretation rather than a confirmed definition."
+        )
+
+    business_uses = []
+
+    domain_lower = domain.lower()
+
+    if "retail" in domain_lower:
+
+        business_uses = [
+            "Product and sales performance monitoring",
+            "Demand and inventory planning",
+            "Product/category comparison",
+            "Sales trend and seasonal analysis",
+            "Merchandising, pricing and promotion decisions",
+        ]
+
+    elif "human resources" in domain_lower:
+
+        business_uses = [
+            "Workforce and employee trend analysis",
+            "Attrition and retention monitoring",
+            "Department and job-role comparison",
+            "Workforce planning",
+            "Employee experience analysis",
+        ]
+
+    elif "marketing" in domain_lower:
+
+        business_uses = [
+            "Campaign performance analysis",
+            "Customer response and conversion analysis",
+            "Audience segmentation",
+            "Channel comparison",
+            "Marketing performance monitoring",
+        ]
+
+    elif "loan" in domain_lower:
+
+        business_uses = [
+            "Loan portfolio and approval analysis",
+            "Borrower segment comparison",
+            "Credit and repayment pattern analysis",
+            "Interest-rate and loan-term analysis",
+            "Default / risk monitoring",
+        ]
+
+    elif "banking" in domain_lower or "financial" in domain_lower:
+
+        business_uses = [
+            "Transaction and account activity analysis",
+            "Balance and payment behaviour analysis",
+            "Customer/account segmentation",
+            "Financial risk monitoring",
+            "Exception and anomaly investigation",
+        ]
+
+    elif "insurance" in domain_lower:
+
+        business_uses = [
+            "Policy and premium analysis",
+            "Claims pattern analysis",
+            "Customer and coverage segmentation",
+            "Loss/risk monitoring",
+            "Portfolio performance analysis",
+        ]
+
+    else:
+
+        business_uses = [
+            "Business performance monitoring",
+            "Trend and group comparison",
+            "Data quality monitoring",
+            "Identification of important business patterns",
+            "Decision support and further investigation",
+        ]
+
+    column_rows = []
+
+    for column in columns:
+
+        dtype = str(
+            df[column].dtype
+        )
+
+        exact_match = None
+
+        normalized = (
+            str(column)
+            .lower()
+            .replace("_", " ")
+            .strip()
+        )
+
+        for result in all_results:
+
+            blob = (
+                result.get("title", "")
+                + " "
+                + result.get("snippet", "")
+            ).lower()
+
+            if (
+                normalized
+                and normalized in blob
+                and len(normalized) >= 4
+            ):
+
+                snippet = result.get(
+                    "snippet",
+                    ""
+                )
+
+                if snippet:
+                    exact_match = snippet
+                    break
+
+        explanation = (
+            exact_match
+            if exact_match
+            else _column_local_explanation(
+                column,
+                dtype
+            )
+        )
+
+        column_rows.append(
+            {
+                "Column": column,
+                "Data Type": dtype,
+                "Meaning / Explanation": explanation,
+                "Missing Values":
+                    int(
+                        df[column].isna().sum()
+                    ),
+                "Unique Values":
+                    int(
+                        df[column].nunique(
+                            dropna=True
+                        )
+                    ),
+            }
+        )
+
+    return {
+        "domain": domain,
+        "dataset_description": dataset_description,
+        "business_uses": business_uses,
+        "column_rows": column_rows,
+        "online_evidence": online_text,
+        "sources": all_results[:10],
+        "research_status":
+            (
+                "Online research completed"
+                if all_results
+                else
+                "Online research unavailable; "
+                "local structural explanation used"
+            ),
+    }
+
+
+
+# ==========================================================
+# DATA-DRIVEN BUSINESS INSIGHT ENGINE
+# ==========================================================
+
+def _bi_norm(value):
+    return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
+
+
+def _bi_pretty(value):
+    return re.sub(r"\s+", " ", re.sub(r"[_-]+", " ", str(value))).strip().title()
+
+
+def _bi_fmt(value):
+    try:
+        value = float(value)
+        if abs(value) >= 1_000_000:
+            return f"{value/1_000_000:.2f}M"
+        if abs(value) >= 1_000:
+            return f"{value:,.0f}"
+        return f"{value:,.2f}"
+    except Exception:
+        return str(value)
+
+
+# Consistent professional palette used by both dashboard views.
+# The palette is applied to generated charts so the dashboard is
+# colourful without changing the user's chart layout or interactions.
+DASHBOARD_PALETTE = [
+    "#22305C",  # navy
+    "#E0553F",  # coral
+    "#5FB57A",  # green
+    "#6F7FEF",  # soft indigo
+    "#F0B85A",  # warm amber
+    "#39B8D6",  # teal
+    "#9B7FEA",  # lavender
+    "#F276A0",  # rose
+    "#6CA9F2",  # soft blue
+    "#7CC9A4",  # mint
+    "#D58B6A",  # terracotta
+    "#8A93A6",  # slate
+]
+
+
+def _apply_dashboard_palette(sheets):
+    """Assign attractive pastel/dashboard colours while preserving chart order."""
+    for sheet_index, sheet in enumerate(sheets or []):
+        for chart_index, chart in enumerate(sheet.get("charts", [])):
+            chart["color"] = DASHBOARD_PALETTE[
+                (sheet_index * 5 + chart_index) % len(DASHBOARD_PALETTE)
+            ]
+    return sheets
+
+
+def _style_neon_figure(fig, chart=None):
+    """Apply the requested clean navy + coral + pastel dashboard theme to Plotly charts."""
+    try:
+        fig.update_layout(
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="#FFFFFF",
+            font=dict(
+                family="Inter, Segoe UI, sans-serif",
+                color="#22305C",
+                size=12,
+            ),
+            title=dict(
+                font=dict(color="#22305C", size=17),
+                x=0.02,
+                xanchor="left",
+            ),
+            margin=dict(l=44, r=20, t=58, b=42),
+            hoverlabel=dict(
+                bgcolor="#22305C",
+                bordercolor="#E0553F",
+                font=dict(color="#FFFFFF", size=12),
+            ),
+            legend=dict(
+                font=dict(color="#475569", size=11),
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            xaxis=dict(
+                color="#475569",
+                gridcolor="#F0E6DC",
+                linecolor="#D9D0C8",
+                zerolinecolor="#E8DED6",
+                title_font=dict(color="#667085"),
+            ),
+            yaxis=dict(
+                color="#475569",
+                gridcolor="#F0E6DC",
+                linecolor="#D9D0C8",
+                zerolinecolor="#E8DED6",
+                title_font=dict(color="#667085"),
+            ),
+        )
+
+        # Match the reference's soft multi-colour chart treatment.
+        if chart and str(chart.get("chart_type", "")).lower() == "pie":
+            pastel = [
+                "#22305C", "#E0553F", "#5FB57A", "#6F7FEF",
+                "#F0B85A", "#39B8D6", "#9B7FEA", "#F276A0"
+            ]
+            for trace in fig.data:
+                try:
+                    trace.marker.colors = pastel
+                except Exception:
+                    pass
+
+        for trace in fig.data:
+            trace_type = str(getattr(trace, "type", "")).lower()
+            mode = str(getattr(trace, "mode", "")).lower()
+            try:
+                if trace_type == "bar":
+                    count = len(trace.x) if trace.x is not None else len(trace.y)
+                    trace.marker.color = [
+                        DASHBOARD_PALETTE[i % len(DASHBOARD_PALETTE)]
+                        for i in range(max(count, 1))
+                    ]
+                    trace.marker.line = dict(color="#FFFFFF", width=1)
+                elif trace_type == "scatter" and "lines" in mode:
+                    trace.line.color = (chart or {}).get("color", "#22305C")
+                    trace.line.width = 3
+                elif trace_type in ("scatter", "scattergl") and "markers" in mode:
+                    trace.marker.size = 8
+                    trace.marker.color = (chart or {}).get("color", "#22305C")
+                    trace.marker.line = dict(color="#FFFFFF", width=1)
+                elif trace_type == "pie":
+                    trace.marker.line = dict(color="#FFFFFF", width=2)
+                else:
+                    try:
+                        trace.marker.color = (chart or {}).get("color", "#22305C")
+                    except Exception:
+                        pass
+                    try:
+                        trace.line.color = (chart or {}).get("color", "#22305C")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return fig
+
+def build_business_insights(df, sheets=None):
+    """Generate insights only from fields that actually exist in the uploaded data."""
+    rows = []
+    n = max(len(df), 1)
+
+    missing = int(df.isna().sum().sum())
+    duplicates = int(df.duplicated().sum())
+
+    if missing:
+        affected = int((df.isna().sum() > 0).sum())
+        pct = missing / (len(df) * max(len(df.columns), 1)) * 100
+        rows.append({
+            "Area": "Data Completeness",
+            "Problem": f"Missing values are present across {affected} columns.",
+            "Evidence": f"{missing:,} missing cells ({pct:.2f}% of all cells).",
+            "Business Impact": "Incomplete fields can reduce the reliability of segment comparisons and downstream reporting.",
+            "Severity": "HIGH" if pct >= 5 else "MEDIUM"
+        })
+
+    if duplicates:
+        pct = duplicates / n * 100
+        rows.append({
+            "Area": "Record Quality",
+            "Problem": "Duplicate records are present and may affect totals or frequency-based analysis.",
+            "Evidence": f"{duplicates:,} duplicate rows ({pct:.2f}% of records).",
+            "Business Impact": "Repeated records can inflate counts, averages, and grouped business metrics.",
+            "Severity": "HIGH" if pct >= 5 else "MEDIUM"
+        })
+
+    numeric = list(df.select_dtypes(include="number").columns)
+    categorical = list(df.select_dtypes(include=["object", "category", "bool"]).columns)
+
+    # Dominant segments: only when a categorical field has meaningful concentration.
+    for col in categorical[:12]:
+        series = df[col].dropna().astype(str)
+        if series.empty or series.nunique() < 2 or series.nunique() > min(30, max(2, int(len(series) * 0.25))):
+            continue
+        shares = series.value_counts(normalize=True)
+        top_value = shares.index[0]
+        top_share = float(shares.iloc[0]) * 100
+        if top_share >= 50:
+            rows.append({
+                "Area": f"{_bi_pretty(col)} Concentration",
+                "Problem": f"The dataset is concentrated in the '{top_value}' segment.",
+                "Evidence": f"'{top_value}' represents {top_share:.1f}% of observed records.",
+                "Business Impact": "A highly concentrated segment can dominate aggregate KPIs and may hide differences in smaller groups.",
+                "Severity": "MEDIUM"
+            })
+            break
+
+    # Outcome/rate fields: detect only from actual values and column names.
+    outcome_terms = ("status", "outcome", "result", "response", "default", "churn", "converted", "approved", "rejected", "fraud", "claim")
+    for col in categorical:
+        name = _bi_norm(col)
+        if not any(term in name for term in outcome_terms):
+            continue
+        series = df[col].dropna().astype(str)
+        if series.nunique() < 2 or series.nunique() > 10:
+            continue
+        counts = series.value_counts()
+        top = counts.index[0]
+        share = float(counts.iloc[0]) / len(series) * 100
+        rows.append({
+            "Area": f"{_bi_pretty(col)} Outcome Mix",
+            "Problem": f"The observed { _bi_pretty(col).lower() } is led by '{top}'.",
+            "Evidence": f"'{top}' accounts for {share:.1f}% of non-missing records ({int(counts.iloc[0]):,} of {len(series):,}).",
+            "Business Impact": "The dominant outcome should be interpreted alongside the smaller outcome groups to understand balance and potential business exposure.",
+            "Severity": "MEDIUM" if share >= 80 else "LOW"
+        })
+        break
+
+    # Numeric dispersion and outliers.
+    for col in numeric[:15]:
+        series = pd.to_numeric(df[col], errors="coerce").dropna()
+        if len(series) < 10 or series.nunique() < 5:
+            continue
+        q1, q3 = series.quantile([0.25, 0.75])
+        iqr = q3 - q1
+        if iqr <= 0:
+            continue
+        outlier_count = int(((series < q1 - 1.5 * iqr) | (series > q3 + 1.5 * iqr)).sum())
+        outlier_pct = outlier_count / len(series) * 100
+        if outlier_pct >= 5:
+            rows.append({
+                "Area": f"{_bi_pretty(col)} Variability",
+                "Problem": f"The measure contains a noticeable share of values outside the interquartile range.",
+                "Evidence": f"{outlier_count:,} of {len(series):,} observed values ({outlier_pct:.1f}%) fall beyond the 1.5×IQR rule.",
+                "Business Impact": "Extreme values can materially influence averages and may represent important high-value or exceptional cases.",
+                "Severity": "MEDIUM"
+            })
+            break
+
+    # Strong numeric associations, without claiming causation.
+    if len(numeric) >= 2:
+        corr = df[numeric].corr(numeric_only=True).abs()
+        pairs = []
+        for i, a in enumerate(numeric):
+            for b in numeric[i+1:]:
+                value = corr.loc[a, b]
+                if pd.notna(value):
+                    pairs.append((float(value), a, b, float(df[[a,b]].corr().iloc[0,1])))
+        if pairs:
+            value, a, b, signed = max(pairs, key=lambda x: x[0])
+            if value >= 0.60:
+                direction = "positive" if signed > 0 else "negative"
+                rows.append({
+                    "Area": "Numeric Relationship",
+                    "Problem": f"A strong {direction} association is visible between {_bi_pretty(a)} and {_bi_pretty(b)}.",
+                    "Evidence": f"Observed Pearson correlation: {signed:.2f}.",
+                    "Business Impact": "This relationship is a useful candidate for deeper analysis, segmentation, or predictive modelling; it does not establish causation.",
+                    "Severity": "LOW"
+                })
+
+    # Useful numeric range insight if no richer pattern was found.
+    if numeric and len(rows) < 4:
+        col = numeric[0]
+        series = pd.to_numeric(df[col], errors="coerce").dropna()
+        if not series.empty:
+            rows.append({
+                "Area": f"{_bi_pretty(col)} Business Range",
+                "Problem": f"The observed { _bi_pretty(col).lower() } spans a wide operating range.",
+                "Evidence": f"Minimum {_bi_fmt(series.min())}; median {_bi_fmt(series.median())}; maximum {_bi_fmt(series.max())}.",
+                "Business Impact": "Segmenting this measure into meaningful business bands may reveal differences that are hidden in overall averages.",
+                "Severity": "LOW"
+            })
+
+    if not rows:
+        rows.append({
+            "Area": "Dataset Structure",
+            "Problem": "No high-priority business barrier was automatically identified from the available fields.",
+            "Evidence": f"The dataset contains {len(df):,} records and {len(df.columns):,} columns with the currently available structure.",
+            "Business Impact": "The dashboard and statistical views should be used to investigate domain-specific patterns further.",
+            "Severity": "LOW"
+        })
+
+    return pd.DataFrame(rows[:10])
+
+
+# ==========================================================
+# PAGE CONFIGURATION
+# ==========================================================
+
+st.set_page_config(
+    page_title="Automated BI Platform",
+    page_icon="📊",
+    layout="wide"
+)
+
+# ==========================================================
+# CUSTOM CSS
+# ==========================================================
+
+st.markdown(
+    """
+    <style>
+    :root {
+        --navy: #22305C;
+        --coral: #E0553F;
+        --green: #5FB57A;
+        --amber: #F0B85A;
+        --teal: #39B8D6;
+        --lavender: #8C7AE6;
+        --bg: #FBF6F1;
+        --surface: #FFFFFF;
+        --surface-soft: #F8F1EB;
+        --border: #EEE1D6;
+        --text: #22305C;
+        --muted: #7C756D;
+    }
+
+    .stApp {
+        background: var(--bg) !important;
+        color: var(--text) !important;
+    }
+
+    header[data-testid="stHeader"],
+    .stApp > header {
+        background: transparent !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        border: 0 !important;
+        box-shadow: none !important;
+    }
+    header[data-testid="stHeader"] * { visibility: hidden !important; }
+    [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"] {
+        display: none !important;
+    }
+
+    div[data-testid="stAppViewContainer"],
+    div[data-testid="stAppViewContainer"] > section.main {
+        background: var(--bg) !important;
+    }
+
+    .main .block-container {
+        max-width: 100% !important;
+        padding-top: 0.4rem !important;
+        padding-bottom: 2.5rem !important;
+    }
+
+    /* Main top navigation / app bar */
+    .ds-topbar {
+        background: var(--navy);
+        border-radius: 10px;
+        padding: 12px 18px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 18px;
+        box-shadow: 0 8px 22px rgba(34,48,92,.14);
+    }
+    .ds-topbar-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #FFFFFF;
+        font-size: 18px;
+        font-weight: 700;
+    }
+    .ds-logo {
+        width: 34px;
+        height: 34px;
+        border-radius: 9px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--coral);
+        color: #FFFFFF;
+        font-size: 17px;
+        font-weight: 900;
+    }
+    .ds-topnav {
+        display: flex;
+        align-items: center;
+        gap: 26px;
+        color: #B9C2D9;
+        font-size: 13px;
+    }
+    .ds-topnav .active {
+        color: #FFFFFF;
+        font-weight: 600;
+        position: relative;
+    }
+    .ds-topnav .active::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -12px;
+        height: 2px;
+        background: var(--coral);
+        border-radius: 2px;
+    }
+
+    .main-title {
+        font-size: 36px;
+        font-weight: 750;
+        color: var(--navy);
+        letter-spacing: -.03em;
+        margin-top: 4px;
+    }
+    .main-subtitle {
+        margin-top: 5px;
+        color: #7C756D;
+        font-size: 14px;
+    }
+
+    .hero-panel {
+        position: relative;
+        overflow: hidden;
+        margin: 14px 0 18px;
+        padding: 22px 24px;
+        border-radius: 14px;
+        border: 1px solid #E8DDD3;
+        background: linear-gradient(105deg, #F1ECFF 0%, #FFFFFF 54%, #FBE8EE 100%);
+        box-shadow: 0 8px 22px rgba(34,48,92,.06);
+    }
+    .hero-kicker {
+        color: var(--coral);
+        font-size: 11px;
+        font-weight: 750;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+    }
+    .hero-title {
+        color: var(--navy);
+        font-size: 25px;
+        font-weight: 750;
+        line-height: 1.2;
+        margin-top: 5px;
+    }
+    .hero-copy {
+        color: #596275;
+        font-size: 13px;
+        line-height: 1.55;
+        max-width: 930px;
+        margin-top: 8px;
+    }
+
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background: #FBF7F2 !important;
+        border-right: 1px solid #EEE1D6 !important;
+    }
+    section[data-testid="stSidebar"] > div {
+        background: #FBF7F2 !important;
+    }
+    .bi-brand {
+        padding: 8px 4px 16px;
+        border-bottom: 1px solid #EDE4DC;
+        margin-bottom: 14px;
+    }
+    .bi-brand-name {
+        color: var(--navy);
+        font-size: 19px;
+        font-weight: 750;
+    }
+    .bi-brand-subtitle {
+        color: #897F75;
+        font-size: 11px;
+        margin-top: 3px;
+        line-height: 1.4;
+    }
+    .neon-section-card {
+        padding: 13px 15px;
+        border-radius: 11px;
+        background: linear-gradient(135deg, #FFFFFF, #FFF5EF);
+        border: 1px solid #EEE1D6;
+        box-shadow: 0 5px 15px rgba(34,48,92,.04);
+    }
+    .neon-section-label {
+        color: var(--coral);
+        font-size: 10px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: .10em;
+    }
+    .neon-section-value {
+        color: var(--navy);
+        font-size: 15px;
+        font-weight: 700;
+        margin-top: 4px;
+    }
+
+    /* Cards and metrics */
+    div[data-testid="stMetric"] {
+        background: #FFFFFF !important;
+        border: 1px solid #EEE1D6 !important;
+        border-radius: 10px !important;
+        padding: 14px 16px !important;
+        box-shadow: 0 5px 15px rgba(34,48,92,.045) !important;
+    }
+    div[data-testid="stMetric"] label {
+        color: #8A7A6D !important;
+        font-weight: 500 !important;
+    }
+    div[data-testid="stMetricValue"] {
+        color: var(--navy) !important;
+        font-size: 1.9rem !important;
+        font-weight: 700 !important;
+    }
+    div[data-testid="stMetricDelta"] { color: var(--green) !important; }
+
+    .neon-kpi {
+        position: relative;
+        min-height: 102px;
+        padding: 16px 17px;
+        border-radius: 11px;
+        overflow: hidden;
+        border: 1px solid #EEE1D6;
+        background: #FFFFFF;
+        box-shadow: 0 6px 18px rgba(34,48,92,.055);
+    }
+    .neon-kpi::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        height: 4px;
+        width: 100%;
+        background: var(--accent);
+    }
+    .neon-kpi-label {
+        color: #8A7A6D;
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: .02em;
+    }
+    .neon-kpi-value {
+        color: var(--navy);
+        font-size: 28px;
+        line-height: 1.05;
+        font-weight: 750;
+        margin-top: 9px;
+    }
+    .neon-kpi-icon {
+        position: absolute;
+        right: 14px;
+        top: 13px;
+        width: 36px;
+        height: 36px;
+        border-radius: 11px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--accent);
+        background: color-mix(in srgb, var(--accent) 12%, white);
+        border: 1px solid color-mix(in srgb, var(--accent) 18%, white);
+    }
+
+    .business-card {
+        padding: 18px;
+        border-radius: 12px;
+        border: 1px solid #EEE1D6;
+        background: #FFFFFF;
+        box-shadow: 0 6px 18px rgba(34,48,92,.045);
+    }
+
+    .section-title {
+        font-size: 26px;
+        font-weight: 750;
+        color: var(--navy);
+        margin-top: 12px;
+        margin-bottom: 8px;
+    }
+    h1,h2,h3,h4 { color: var(--navy) !important; }
+    p,span,label,div { }
+
+    /* Streamlit buttons */
+    .stButton > button,
+    .stDownloadButton > button {
+        border-radius: 8px !important;
+        border: 1px solid #E7D8CC !important;
+        color: var(--navy) !important;
+        background: #FFFFFF !important;
+        box-shadow: 0 4px 12px rgba(34,48,92,.045) !important;
+        font-weight: 650 !important;
+    }
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {
+        border-color: var(--coral) !important;
+        color: var(--coral) !important;
+        box-shadow: 0 6px 16px rgba(224,85,63,.12) !important;
+    }
+    button[kind="primary"] {
+        background: var(--coral) !important;
+        color: #FFFFFF !important;
+        border-color: var(--coral) !important;
+    }
+
+    /* Inputs */
+    div[data-baseweb="select"] > div,
+    div[data-baseweb="input"] > div,
+    div[data-testid="stTextInput"] input,
+    textarea {
+        background: #FFFFFF !important;
+        color: var(--navy) !important;
+        border-color: #E7D8CC !important;
+        border-radius: 8px !important;
+    }
+    div[data-baseweb="select"] span { color: var(--navy) !important; }
+    div[data-testid="stFileUploader"] {
+        padding: 4px;
+        border-radius: 10px;
+        background: #FFFFFF;
+        border: 1px dashed #E2CFC2;
+    }
+    div[data-testid="stFileUploaderDropzone"] {
+        background: #FFFDFB !important;
+        border-color: #E8D8CC !important;
+    }
+
+    /* Tabs */
+    button[data-baseweb="tab"] {
+        color: #6D6A66 !important;
+        font-weight: 600 !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        color: var(--navy) !important;
+    }
+    div[data-baseweb="tab-highlight"] { background: var(--coral) !important; }
+
+    /* Alerts, expanders, dataframes */
+    div[data-testid="stAlert"] {
+        border-radius: 10px;
+        border: 1px solid #E8DDD4;
+        background: #FFFFFF;
+    }
+    div[data-testid="stExpander"] {
+        border: 1px solid #EEE1D6 !important;
+        border-radius: 10px !important;
+        background: #FFFFFF !important;
+        overflow: hidden;
+    }
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #E9DED5;
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 5px 16px rgba(34,48,92,.04);
+    }
+    code { color: var(--coral) !important; }
+    a { color: var(--coral) !important; }
+
+    /* Dedicated dashboard */
+    .neon-dashboard-title {
+        font-size: 2.5rem;
+        font-weight: 800;
+        letter-spacing: -.035em;
+        color: var(--navy);
+    }
+    .neon-dashboard-subtitle {
+        color: #7C756D;
+        font-size: 13px;
+        margin-top: 4px;
+        margin-bottom: 14px;
+    }
+
+    ::-webkit-scrollbar { width: 9px; height: 9px; }
+    ::-webkit-scrollbar-track { background: #F2E8DF; }
+    ::-webkit-scrollbar-thumb { background: #D6C3B6; border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: #BEA89A; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+_current_user = _enforce_authentication()
+
+# ==========================================================
+# SESSION STATE
+# ==========================================================
+
+if "df" not in st.session_state:
+    st.session_state.df = None
+
+if "sheets" not in st.session_state:
+    st.session_state.sheets = []
+
+if "insights" not in st.session_state:
+    st.session_state.insights = pd.DataFrame()
+
+if "recommendations" not in st.session_state:
+    st.session_state.recommendations = []
+
+if "questions" not in st.session_state:
+    st.session_state.questions = []
+
+if "data_key" not in st.session_state:
+    st.session_state.data_key = None
+
+if "research_result" not in st.session_state:
+    st.session_state.research_result = None
+
+if "research_sources" not in st.session_state:
+    st.session_state.research_sources = []
+
+if "basic_data_explanation" not in st.session_state:
+    st.session_state.basic_data_explanation = None
+
+if "pdf_questions" not in st.session_state:
+    st.session_state.pdf_questions = None
+
+if "report_cache_signature" not in st.session_state:
+    st.session_state.report_cache_signature = None
+
+if "report_cache_path" not in st.session_state:
+    st.session_state.report_cache_path = None
+
+if "uploaded_files_analysis" not in st.session_state:
+    st.session_state.uploaded_files_analysis = None
+
+if "uploaded_files_key" not in st.session_state:
+    st.session_state.uploaded_files_key = None
+
+
+# ==========================================================
+# HEADER
+# ==========================================================
+
+st.markdown(
+    """
+    <div class="ds-topbar">
+        <div class="ds-topbar-brand">
+            <div class="ds-logo">✦</div>
+            <span>DATA ANALYZER</span>
+        </div>
+        <div class="ds-topnav">
+            <span class="active">▦ Dashboard</span>
+            <span>▤ Reports</span>
+            <span>⚙ Settings</span>
+        </div>
+    </div>
+    <div style="padding:0 2px 2px;">
+        <div class="main-title">Interactive Business Intelligence</div>
+        <div class="main-subtitle">Explore your uploaded data through dashboards, insights, recommendations and management questions.</div>
+    </div>
+    <div class="hero-panel">
+        <div class="hero-kicker">AI-powered analytics workspace</div>
+        <div class="hero-title">Turn raw business data into a decision-ready dashboard.</div>
+        <div class="hero-copy">
+            Upload a CSV or Excel dataset and DATA ANALYZER automatically adapts its dashboard sheets,
+            colourful charts, statistics, business insights, recommendations, Ask Data questions and final report to the actual data.
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+
+# ==========================================================
+# SIDEBAR
+# ==========================================================
+
+with st.sidebar:
+
+    st.markdown(
+        """
+        <div class="bi-brand">
+            <div class="bi-brand-name">◈ DATA ANALYZER</div>
+            <div class="bi-brand-subtitle">
+                Intelligent Business Analytics Command Center
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        '<div class="neon-section-card">'
+        '<div class="neon-section-label">Workspace</div>'
+        '<div class="neon-section-value">Upload & Configure</div>'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+
+    # The dashboard route must never ask for another dataset. It reads the
+    # saved snapshot created by the main page instead.
+    try:
+        _sidebar_page = str(st.query_params.get("page", "")).strip().lower()
+    except Exception:
+        try:
+            _sidebar_params = st.experimental_get_query_params()
+            _sidebar_value = _sidebar_params.get("page", [""])
+            _sidebar_page = str(
+                _sidebar_value[0] if isinstance(_sidebar_value, list) else _sidebar_value
+            ).strip().lower()
+        except Exception:
+            _sidebar_page = ""
+
+    if _sidebar_page == "dashboard":
+        uploaded_files = []
+        sheet_count = 4
+        st.info("This page uses the dataset saved from the main application. No second upload is needed.")
+    else:
+        uploaded_files = st.file_uploader(
+            "📁 Upload CSV / Excel Files",
+            type=["csv", "xlsx", "xls"],
+            accept_multiple_files=True,
+            help="Upload one or more CSV/Excel files. The active dataset is shared with the dashboard link."
+        )
+
+        file_count_for_sidebar = len(uploaded_files or [])
+        if file_count_for_sidebar:
+            pair_count_for_sidebar = file_count_for_sidebar * (file_count_for_sidebar - 1) // 2
+            st.success(f"📂 {file_count_for_sidebar} file(s) selected")
+            st.caption(f"Automatic pairwise comparisons: {pair_count_for_sidebar}")
+
+        sheet_count = st.selectbox(
+            "Number of Dashboard Sheets",
+            [4, 5],
+            index=0
+        )
+        st.caption("4 sheets = 20 charts\n\n5 sheets = 25 charts")
+
+
+
+# ==========================================================
+# INTERACTIVE DASHBOARD PAGE
+# ==========================================================
+
+
+def _get_page_parameter():
+    """Read the optional Streamlit page query parameter."""
+    try:
+        return str(st.query_params.get("page", "")).strip().lower()
+    except Exception:
+        try:
+            params = st.experimental_get_query_params()
+            value = params.get("page", [""])
+            return str(value[0] if isinstance(value, list) else value).strip().lower()
+        except Exception:
+            return ""
+
+
+def _save_dashboard_snapshot(dataframe, sheets):
+    """Save the current main-app dashboard state for the dedicated page."""
+    reports_dir = REPORTS_DIR
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_path = reports_dir / "dashboard_snapshot.pkl"
+    with open(snapshot_path, "wb") as snapshot_file:
+        pickle.dump(
+            {
+                "df": dataframe.copy(),
+                "sheets": sheets,
+                "dataset_name": st.session_state.get("active_dataset_name", "Main-page upload"),
+                "dataset_columns": [str(column) for column in dataframe.columns],
+                "dataset_rows": int(len(dataframe)),
+                "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            snapshot_file,
+        )
+    return snapshot_path
+
+
+def _dashboard_audit_path():
+    reports_dir = REPORTS_DIR
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    return reports_dir / "dashboard_audit.json"
+
+
+def _dashboard_log_event(email, action, details=""):
+    """Persist dashboard access/change events for the main application."""
+    try:
+        audit_path = _dashboard_audit_path()
+        events = []
+        if audit_path.exists():
+            try:
+                events = json.loads(audit_path.read_text(encoding="utf-8"))
+                if not isinstance(events, list):
+                    events = []
+            except Exception:
+                events = []
+
+        events.append({
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "email": str(email or "Unknown"),
+            "action": str(action),
+            "details": str(details or ""),
+        })
+
+        # Keep the audit file manageable while retaining recent activity.
+        events = events[-500:]
+        audit_path.write_text(
+            json.dumps(events, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _dashboard_read_audit_events():
+    try:
+        audit_path = _dashboard_audit_path()
+        if not audit_path.exists():
+            return []
+        events = json.loads(audit_path.read_text(encoding="utf-8"))
+        return events if isinstance(events, list) else []
+    except Exception:
+        return []
+
+
+def _render_dashboard_audit_on_main():
+    """Show who accessed/changed the shared dashboard on the main page."""
+    events = _dashboard_read_audit_events()
+    with st.expander("🔐 Dashboard Access & Change Activity", expanded=False):
+        if st.button("🔄 Refresh dashboard activity", key="refresh_dashboard_audit_log"):
+            st.rerun()
+        events = _dashboard_read_audit_events()
+        if not events:
+            st.info("No dashboard access or change activity has been recorded yet.")
+            return
+
+        rows = []
+        for event in reversed(events[-100:]):
+            rows.append({
+                "Time": event.get("timestamp", ""),
+                "Email": event.get("email", ""),
+                "Action": event.get("action", ""),
+                "Details": event.get("details", ""),
+            })
+        st.dataframe(
+            pd.DataFrame(rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption("The table records dashboard email access and dashboard filter/interaction changes.")
+
+
+def _dashboard_filter_state(sheet_index):
+    """Return the filter dictionary used by the copied dashboard page."""
+    if "legacy_dashboard_filters" not in st.session_state:
+        st.session_state.legacy_dashboard_filters = {}
+    st.session_state.legacy_dashboard_filters.setdefault(sheet_index, {})
+    return st.session_state.legacy_dashboard_filters[sheet_index]
+
+
+def _clear_dashboard_sheet_filter(sheet_index):
+    if "legacy_dashboard_filters" in st.session_state:
+        st.session_state.legacy_dashboard_filters[sheet_index] = {}
+    _dashboard_log_event(
+        st.session_state.get("dashboard_access_email", "Unknown"),
+        "Sheet filters cleared",
+        f"Sheet {sheet_index + 1}",
+    )
+
+
+def _clear_dashboard_all_filters():
+    st.session_state.legacy_dashboard_filters = {}
+    _dashboard_log_event(
+        st.session_state.get("dashboard_access_email", "Unknown"),
+        "All chart filters cleared",
+        "All sheet-level chart filters were cleared.",
+    )
+
+
+def _apply_dashboard_filters(dataframe, filters):
+    """Apply both single-value chart filters and multi-select slicer filters."""
+    result = dataframe.copy()
+    for column, value in (filters or {}).items():
+        if column not in result.columns or value in (None, "All", [], (), set()):
+            continue
+
+        if isinstance(value, (list, tuple, set)):
+            allowed = {str(item) for item in value}
+            if not allowed:
+                continue
+            result = result[result[column].astype(str).isin(allowed)]
+        else:
+            result = result[result[column].astype(str) == str(value)]
+
+    return result.copy()
+
+
+def _dashboard_filter_candidates(dataframe):
+    """Return useful low-cardinality fields for dashboard slicers."""
+    candidates = []
+    for column in dataframe.columns:
+        series = dataframe[column]
+        nunique = int(series.nunique(dropna=True))
+
+        is_date = pd.api.types.is_datetime64_any_dtype(series)
+        is_categorical = pd.api.types.is_object_dtype(series) or pd.api.types.is_categorical_dtype(series) or pd.api.types.is_bool_dtype(series)
+        is_low_card_numeric = pd.api.types.is_numeric_dtype(series) and nunique <= 25
+
+        if (is_date or is_categorical or is_low_card_numeric) and 1 <= nunique <= 100:
+            candidates.append(column)
+
+    return candidates[:12]
+
+
+def _render_dashboard_global_filters(dataframe):
+    """Render dashboard-wide slicers that update every analytical sheet."""
+    if "dashboard_global_filters" not in st.session_state:
+        st.session_state.dashboard_global_filters = {}
+
+    candidates = _dashboard_filter_candidates(dataframe)
+    if not candidates:
+        return dataframe.copy(), {}
+
+    st.markdown("### 🎛 Dashboard Filters")
+    st.caption("Select one or more fields below. The selected filters are applied across every dashboard sheet and every chart.")
+
+    current = dict(st.session_state.dashboard_global_filters)
+    previous_applied = current.get("applied", {})
+    new_filters = {}
+
+    filter_columns = st.columns(3)
+    for idx, col_container in enumerate(filter_columns):
+        with col_container:
+            previous_column = current.get(f"column_{idx}")
+            options = ["None"] + [str(c) for c in candidates]
+            default_index = options.index(previous_column) if previous_column in options else 0
+            selected_column = st.selectbox(
+                f"Filter {idx + 1}",
+                options,
+                index=default_index,
+                key=f"dashboard_filter_column_{idx}",
+            )
+
+            if selected_column == "None":
+                continue
+
+            selected_series = dataframe[selected_column]
+            values = selected_series.dropna().astype(str).drop_duplicates().sort_values().tolist()
+            selected_values = current.get(f"values_{idx}", [])
+            selected_values = [str(v) for v in selected_values if str(v) in values]
+
+            chosen_values = st.multiselect(
+                f"Values — {_pretty_column_name(selected_column)}",
+                values,
+                default=selected_values,
+                key=f"dashboard_filter_values_{idx}",
+            )
+
+            if chosen_values:
+                new_filters[selected_column] = chosen_values
+
+            current[f"column_{idx}"] = selected_column
+            current[f"values_{idx}"] = chosen_values
+
+    c1, c2 = st.columns([1, 5])
+    with c1:
+        if st.button("🧹 Clear Filters", key="dashboard_clear_global_filters", use_container_width=True):
+            st.session_state.dashboard_global_filters = {}
+            for idx in range(3):
+                st.session_state.pop(f"dashboard_filter_column_{idx}", None)
+                st.session_state.pop(f"dashboard_filter_values_{idx}", None)
+            st.rerun()
+    with c2:
+        if new_filters:
+            st.info("Active dashboard filters: " + " • ".join(f"{k}: {', '.join(map(str, v))}" for k, v in new_filters.items()))
+        else:
+            st.caption("No global filters selected. All uploaded records are being displayed.")
+
+    # Keep the selected columns/values available for the next rerun.
+    if new_filters != previous_applied:
+        email = st.session_state.get("dashboard_access_email", "Unknown")
+        _dashboard_log_event(
+            email,
+            "Global dashboard filters changed",
+            json.dumps(new_filters, ensure_ascii=False),
+        )
+
+    st.session_state.dashboard_global_filters = {
+        **current,
+        "applied": new_filters,
+    }
+
+    filtered = _apply_dashboard_filters(dataframe, new_filters)
+    return filtered, new_filters
+
+
+def _dashboard_attach_selection(fig, category, dataframe):
+    """Add [column, value] metadata so the old dashboard-style click filter works."""
+    if not category or category not in dataframe.columns:
+        return fig
+
+    values = dataframe[category].dropna().astype(str).unique().tolist()
+    if not values:
+        return fig
+
+    for trace in fig.data:
+        try:
+            trace_x = list(trace.x) if trace.x is not None else []
+            trace_y = list(trace.y) if trace.y is not None else []
+
+            # Most categorical charts place the category on x.
+            if trace_x and len(trace_x) == len(trace_y):
+                trace.customdata = [[category, str(v)] for v in trace_x]
+            elif trace.labels is not None:
+                labels = list(trace.labels)
+                trace.customdata = [[category, str(v)] for v in labels]
+            elif trace_y:
+                trace.customdata = [[category, str(v)] for v in trace_y]
+        except Exception:
+            pass
+
+    return fig
+
+
+def _dashboard_capture_selection(event, sheet_index):
+    """Read a Plotly point selection in the same way as the old dashboard."""
+    if event is None:
+        return False
+
+    try:
+        points = list(event.selection.points or [])
+    except Exception:
+        try:
+            points = list(event.get("selection", {}).get("points", []))
+        except Exception:
+            points = []
+
+    if not points:
+        return False
+
+    point = points[0]
+    customdata = point.get("customdata")
+    if not isinstance(customdata, (list, tuple)) or len(customdata) < 2:
+        return False
+
+    column = customdata[0]
+    value = customdata[1]
+    filters = _dashboard_filter_state(sheet_index)
+
+    if filters.get(column) == value:
+        return False
+
+    filters[column] = value
+    _dashboard_log_event(
+        st.session_state.get("dashboard_access_email", "Unknown"),
+        "Chart filter changed",
+        f"Sheet {sheet_index + 1}: {column} = {value}",
+    )
+    return True
+
+
+def _dashboard_chart(fig, chart, filtered_df, sheet_index, chart_index):
+    """Render one generated chart using the visual/interaction pattern of dashboard_app.py."""
+    category = chart.get("category")
+
+    fig = _dashboard_attach_selection(
+        fig,
+        category,
+        filtered_df,
+    )
+
+    fig.update_layout(
+        height=360,
+        margin=dict(l=35, r=20, t=55, b=50),
+        hovermode="closest",
+        legend_title_text="",
+    )
+
+    event = st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key=(
+            f"copied_dashboard_chart_"
+            f"{sheet_index}_"
+            f"{chart.get('chart_id', chart_index)}"
+        ),
+        on_select="rerun",
+        selection_mode="points",
+    )
+
+    return _dashboard_capture_selection(event, sheet_index)
+
+
+def _render_interactive_dashboard_page(df, sheets):
+    """
+    Dedicated dashboard page copied from the old dashboard_app.py layout.
+
+    Important difference from the old standalone app:
+    the page does NOT ask for a dataset. It uses the dataset already
+    uploaded/generated by the main Automated BI application.
+    """
+
+    # If a dashboard snapshot was created by an older version in which every
+    # chart used the same default blue, upgrade that snapshot to the new
+    # professional palette. User-customized multi-colour dashboards are kept.
+    existing_colors = [
+        chart.get("color")
+        for sheet in sheets or []
+        for chart in sheet.get("charts", [])
+        if chart.get("color")
+    ]
+    if existing_colors and len(set(existing_colors)) == 1:
+        _apply_dashboard_palette(sheets)
+
+    # ========================================================
+    # OLD DASHBOARD STYLING / HEADER
+    # ========================================================
+    st.markdown(
+        """
+        <div class="neon-dashboard-title">✦ Analytics Dashboard</div>
+        <div class="neon-dashboard-subtitle">
+            Interactive dashboard with AI insights, advanced analytics and
+            Power BI-style sheet-level filtering.
+        </div>
+        <div class="hero-panel" style="margin-top:4px;">
+            <div class="hero-kicker">Live business dashboard</div>
+            <div class="hero-title" style="font-size:23px;">
+                Explore performance, patterns and management signals.
+            </div>
+            <div class="hero-copy">
+                Use slicers and chart selections to explore the uploaded dataset.
+                Every sheet uses the same analytical source and updates its
+                related charts when filters are applied.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        f"[← Back to Main Analysis]({_get_app_base_url()})"
+    )
+
+    # ========================================================
+    # KPI CARDS — same visual idea as the old dashboard
+    # ========================================================
+    total_charts = sum(
+        len(sheet.get("charts", []))
+        for sheet in sheets
+    )
+
+    numeric_columns = df.select_dtypes(include="number").columns.tolist()
+    primary_metric = numeric_columns[0] if numeric_columns else None
+    average_metric = (
+        f"{df[primary_metric].mean():,.2f}"
+        if primary_metric and len(df)
+        else "—"
+    )
+
+    k1, k2, k3, k4 = st.columns(4)
+    kpi_items = [
+        (k1, "Total Records", f"{len(df):,}", "#22D3EE", "#22D3EE20", "◉"),
+        (k2, "Dashboard Sheets", f"{len(sheets):,}", "#8B5CF6", "#8B5CF620", "✦"),
+        (k3, "Average Metric", average_metric, "#34D399", "#34D39920", "↗"),
+        (k4, "Dashboard Charts", f"{total_charts:,}", "#EC4899", "#EC489920", "◈"),
+    ]
+    for col, label, value, accent, glow, icon in kpi_items:
+        with col:
+            st.markdown(
+                f'<div class="neon-kpi" style="--accent:{accent};--glow:{glow};">'
+                f'<div class="neon-kpi-icon">{icon}</div>'
+                f'<div class="neon-kpi-label">{label}</div>'
+                f'<div class="neon-kpi-value">{value}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+
+    st.write("")
+
+    # ========================================================
+    # GLOBAL SLICERS
+    # ========================================================
+    global_filtered_df, global_filters = _render_dashboard_global_filters(df)
+
+    # ========================================================
+    # GLOBAL CLEAR — copied from old dashboard
+    # ========================================================
+    if st.button("🧹 Clear All Chart Filters", key="clear_all_chart_filters"):
+        _clear_dashboard_all_filters()
+        st.rerun()
+
+    st.divider()
+
+    if not sheets:
+        st.warning("No generated dashboard sheets are available.")
+        st.markdown(f"[← Open Main Streamlit Application]({_get_app_base_url()})")
+        return
+
+    # ========================================================
+    # SHEETS — same tabs + two-column layout as old dashboard
+    # ========================================================
+    tabs = st.tabs([
+        sheet.get("name", "Dashboard")
+        for sheet in sheets
+    ])
+
+    for sheet_index, (tab, sheet) in enumerate(zip(tabs, sheets)):
+        with tab:
+            st.markdown(
+                f'<div class="neon-section-card">'
+                f'<div class="neon-section-label">ANALYTICAL SHEET</div>'
+                f'<div class="neon-section-value">📁 {sheet.get("name", "Dashboard")}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+            st.caption(
+                sheet.get(
+                    "description",
+                    "Business dashboard analysis"
+                )
+            )
+
+            filters = _dashboard_filter_state(sheet_index)
+
+            c1, c2 = st.columns([5, 1])
+            with c1:
+                if filters:
+                    st.info(
+                        "🔎 Active filters: " +
+                        " • ".join(
+                            f"{key}: {value}"
+                            for key, value in filters.items()
+                        )
+                    )
+                else:
+                    st.caption(
+                        "💡 Click a category/value in a chart. "
+                        "All charts on this sheet will update."
+                    )
+            with c2:
+                if st.button(
+                    "✖ Clear",
+                    key=f"copy_clear_sheet_{sheet_index}",
+                    disabled=not bool(filters),
+                    use_container_width=True,
+                ):
+                    _clear_dashboard_sheet_filter(sheet_index)
+                    st.rerun()
+
+            filtered_df = _apply_dashboard_filters(global_filtered_df, filters)
+            if global_filters:
+                st.caption(
+                    f"Showing {len(filtered_df):,} records after global + sheet filters "
+                    f"(global: {len(global_filtered_df):,} / total: {len(df):,})"
+                )
+            else:
+                st.caption(
+                    f"Showing {len(filtered_df):,} of {len(df):,} records"
+                )
+
+            charts = sorted(
+                sheet.get("charts", []),
+                key=lambda chart: chart.get("position", 999)
+            )
+
+            columns = st.columns(2)
+
+            for chart_index, chart in enumerate(charts):
+                with columns[chart_index % 2]:
+                    try:
+                        fig = create_chart(
+                            filtered_df,
+                            category=chart.get("category"),
+                            metric=chart.get("metric"),
+                            chart_type=chart.get("chart_type", "Bar"),
+                            color=chart.get("color", "#22D3EE"),
+                            title=chart.get("title", "Business Chart")
+                        )
+
+                        fig = _style_neon_figure(fig, chart)
+
+                        selection_changed = _dashboard_chart(
+                            fig,
+                            chart,
+                            filtered_df,
+                            sheet_index,
+                            chart_index,
+                        )
+
+                        if selection_changed:
+                            st.rerun()
+
+                    except Exception as exc:
+                        st.error(
+                            f"Unable to render "
+                            f"'{chart.get('title', 'Business Chart')}': {exc}"
+                        )
+
+            st.success(
+                f"✅ {sheet.get('name', 'Dashboard')}: "
+                f"{len(charts)} interactive charts"
+            )
+
+    st.divider()
+    st.metric("TOTAL DASHBOARD CHARTS", total_charts)
+
+    st.markdown("### 📌 Dashboard Page Link")
+    dashboard_link = _get_dashboard_url()
+    st.markdown(f"[🔗 OPEN THE SAME DATASET DASHBOARD]({dashboard_link})")
+    st.code(dashboard_link, language="text")
+    st.caption(
+        "This link opens the dashboard route in this same app.py application. "
+        "It reads the latest saved dataset from the main page; do not launch a separate dashboard_app.py."
+    )
+
+
+# ==========================================================
+# CHECK FOR THE DEDICATED DASHBOARD PAGE
+# ==========================================================
+
+_requested_page = _get_page_parameter()
+
+if _requested_page == "dashboard":
+
+    # ======================================================
+    # DASHBOARD EMAIL ACCESS GATE
+    # ======================================================
+    dashboard_email = st.session_state.get("dashboard_access_email", "")
+
+    if not dashboard_email:
+        st.markdown("# 📊 Interactive Dashboard")
+        st.info("Enter your email address to open this dashboard.")
+        access_email = st.text_input(
+            "Email ID",
+            placeholder="example@gmail.com",
+            key="dashboard_access_email_input",
+        )
+
+        if st.button(
+            "📊 Open Dashboard",
+            type="primary",
+            use_container_width=True,
+            key="dashboard_access_button",
+        ):
+            access_email = access_email.strip()
+            if not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", access_email):
+                st.error("Please enter a valid email address.")
+                st.stop()
+
+            st.session_state.dashboard_access_email = access_email
+            _dashboard_log_event(
+                access_email,
+                "Dashboard opened",
+                "Email access granted for the interactive dashboard.",
+            )
+            st.rerun()
+
+        st.stop()
+
+    st.caption(f"Dashboard access: {dashboard_email}")
+
+    # ALWAYS prefer the latest shared snapshot written by the main page.
+    # This prevents a dashboard browser session from showing a stale dataframe
+    # that happens to remain in its own Streamlit session state.
+    dashboard_df = None
+    dashboard_sheets = []
+    snapshot_path = REPORTS_DIR / "dashboard_snapshot.pkl"
+
+    if snapshot_path.exists():
+        try:
+            with open(snapshot_path, "rb") as snapshot_file:
+                snapshot = pickle.load(snapshot_file)
+
+            dashboard_df = snapshot.get("df")
+            dashboard_sheets = snapshot.get("sheets", [])
+            st.caption(
+                f"Shared dataset: {snapshot.get('dataset_name', 'Main-page upload')} · "
+                f"{snapshot.get('dataset_rows', len(dashboard_df) if dashboard_df is not None else 0):,} rows · "
+                f"Saved: {snapshot.get('saved_at', 'unknown')}"
+            )
+        except Exception as snapshot_error:
+            st.error(
+                "Unable to load the latest shared dashboard snapshot: "
+                f"{snapshot_error}"
+            )
+            st.stop()
+
+    # Fallback only for the same session if no snapshot exists yet.
+    if dashboard_df is None:
+        dashboard_df = st.session_state.get("df")
+        dashboard_sheets = st.session_state.get("sheets", [])
+
+    if dashboard_df is None:
+        st.warning(
+            "No dashboard data is available yet. "
+            "Please return to the main page and upload a dataset first."
+        )
+        st.markdown(
+            f"[← Open Main Streamlit Application]({_get_app_base_url()})"
+        )
+        st.stop()
+
+    _render_interactive_dashboard_page(
+        dashboard_df,
+        dashboard_sheets
+    )
+
+    st.stop()
+
+
+# ==========================================================
+# LOAD DATA
+# ==========================================================
+
+if uploaded_files:
+
+    current_data_key = _multi_file_signature(
+        uploaded_files,
+        sheet_count,
+    )
+
+    if st.session_state.uploaded_files_key != current_data_key:
+
+        try:
+
+            multi_analysis = _build_multi_file_analysis(uploaded_files)
+
+            if not multi_analysis["frames"]:
+                first_error = (
+                    multi_analysis["errors"][0]["error"]
+                    if multi_analysis["errors"]
+                    else "No usable files were loaded."
+                )
+                raise ValueError(first_error)
+
+            st.session_state.uploaded_files_analysis = multi_analysis
+
+            # Preserve the existing dashboard/model by using a combined dataframe
+            # when all uploaded files have the same schema. With mixed schemas,
+            # the first valid file remains the primary dashboard dataset while
+            # every file is still available in the multi-file comparison layer.
+            if multi_analysis["combined_df"] is not None:
+                df = convert_date_columns(multi_analysis["combined_df"])
+            else:
+                df = multi_analysis["frames"][0]["df"].copy()
+
+            st.session_state.df = df
+            st.session_state.active_dataset_name = ", ".join(
+                str(getattr(f, "name", "dataset")) for f in uploaded_files
+            ) or "Uploaded dataset"
+            st.session_state.pdf_questions = None
+            st.session_state.report_cache_signature = None
+            st.session_state.report_cache_path = None
+            st.session_state.report_sections = []
+            st.session_state.report_dashboard_sheets = []
+            st.session_state.dashboard_global_filters = {}
+            st.session_state.legacy_dashboard_filters = {}
+
+            st.session_state.sheets = (
+                generate_sheet_templates(
+                    df,
+                    sheet_count
+                )
+            )
+
+            for sheet_index, sheet in enumerate(
+                st.session_state.sheets
+            ):
+
+                for chart_index, chart in enumerate(
+                    sheet.get(
+                        "charts",
+                        []
+                    )
+                ):
+
+                    chart.setdefault(
+                        "chart_id",
+                        f"sheet{sheet_index}_chart{chart_index}"
+                    )
+
+                    chart.setdefault(
+                        "position",
+                        chart_index + 1
+                    )
+
+                    chart["color"] = DASHBOARD_PALETTE[
+                        (sheet_index * 5 + chart_index) % len(DASHBOARD_PALETTE)
+                    ]
+
+            # Keep the snapshot synchronized with the CURRENT main-page dataset
+            # and the exact dashboard charts generated for that dataset.
+            _save_dashboard_snapshot(df, st.session_state.sheets)
+
+            st.session_state.insights = (
+                build_business_insights(
+                    df,
+                    st.session_state.sheets
+                )
+            )
+
+            try:
+
+                st.session_state.recommendations = (
+                    generate_recommendations(
+                        df
+                    )
+                )
+
+            except Exception as recommendation_error:
+
+                st.session_state.recommendations = []
+
+                st.warning(
+                    f"Recommendation generation failed: "
+                    f"{recommendation_error}"
+                )
+
+            try:
+
+                st.session_state.basic_data_explanation = (
+                    generate_basic_data_explanation(
+                        df
+                    )
+                )
+
+                basic_research = (
+                    st.session_state.basic_data_explanation
+                )
+
+                st.session_state.research_result = {
+                    "domain":
+                        basic_research.get(
+                            "domain",
+                            "General Business Analytics"
+                        ),
+
+                    "analysis":
+                        basic_research.get(
+                            "dataset_description",
+                            "No online explanation available."
+                        ),
+                }
+
+                st.session_state.research_sources = (
+                    basic_research.get(
+                        "sources",
+                        []
+                    )
+                )
+
+            except Exception as research_error:
+
+                st.session_state.basic_data_explanation = {
+                    "domain":
+                        _detect_business_domain(
+                            df
+                        ),
+
+                    "dataset_description":
+                        (
+                            "Online research could not be completed: "
+                            f"{research_error}"
+                        ),
+
+                    "business_uses": [],
+                    "column_rows": [],
+                    "online_evidence": [],
+                    "sources": [],
+
+                    "research_status":
+                        "Online research failed",
+                }
+
+                st.session_state.research_result = {
+                    "domain":
+                        st.session_state
+                        .basic_data_explanation[
+                            "domain"
+                        ],
+
+                    "analysis":
+                        st.session_state
+                        .basic_data_explanation[
+                            "dataset_description"
+                        ],
+                }
+
+                st.session_state.research_sources = []
+
+            st.session_state.data_key = current_data_key
+            st.session_state.uploaded_files_key = current_data_key
+
+        except Exception as e:
+
+            st.session_state.df = None
+            st.session_state.sheets = []
+            st.session_state.insights = pd.DataFrame()
+            st.session_state.recommendations = []
+            st.session_state.uploaded_files_analysis = None
+            st.error(
+                f"Unable to process uploaded files: {e}"
+            )
+            st.stop()
+
+    # Show the comparison layer without changing the old dashboard model.
+    _render_multi_file_analysis(
+        st.session_state.get("uploaded_files_analysis")
+    )
+
+    _render_dashboard_audit_on_main()
+
+else:
+
+    st.session_state.uploaded_files_key = None
+    st.session_state.uploaded_files_analysis = None
+
+    st.markdown(
+        """
+        <div class="hero-panel" style="margin-top:4px;">
+            <div class="hero-kicker">Workspace ready</div>
+            <div class="hero-title">Your analytics command center is ready.</div>
+            <div class="hero-copy">
+                Start by uploading your CSV or Excel file from the sidebar.
+                The platform will adapt its dashboard topics, charts, insights,
+                questions and recommendations to the actual structure of your data.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown("### ✦ What your workspace will generate")
+
+    f1, f2, f3, f4 = st.columns(4)
+
+    cards = [
+        (f1, "#22D3EE", "◉", "Interactive Dashboards",
+         "4–5 business sheets with 5 colourful charts per sheet."),
+        (f2, "#8B5CF6", "✦", "AI Business Insights",
+         "Signals, barriers, trends and management focus areas."),
+        (f3, "#EC4899", "◈", "Smart Ask Data",
+         "Professional questions generated from your actual data."),
+        (f4, "#FB923C", "↗", "Decision Report",
+         "Compact PDF report with insights and dashboard access."),
+    ]
+
+    for col, color, icon, title, copy in cards:
+        with col:
+            st.markdown(
+                f"""
+                <div style=\"border:1px solid #EEE1D6;border-radius:14px;padding:18px;
+                             background:#FFFFFF;box-shadow:0 7px 20px rgba(34,48,92,.05);
+                             height:170px;\">
+                    <div style=\"font-size:24px;color:{color};font-weight:800;\">{icon}</div>
+                    <div style=\"font-size:16px;font-weight:750;color:#22305C;margin-top:8px;\">{title}</div>
+                    <div style=\"font-size:12px;line-height:1.5;color:#7C756D;margin-top:7px;\">{copy}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+# ==========================================================
+# MAIN APPLICATION TABS
+# ==========================================================
+
+# Keep the active dataframe available on every Streamlit rerun.
+# Streamlit reruns the entire script when a tab, button, or widget changes.
+df = st.session_state.get("df", None)
+
+# DATAFRAME SAFETY GUARD
+if df is None:
+    st.info("📂 Please upload a CSV or Excel file to start the analysis.")
+    st.stop()
+
+if not isinstance(df, pd.DataFrame):
+    st.error("❌ The active dataset is not a valid pandas DataFrame. Please upload the dataset again.")
+    st.session_state["df"] = None
+    st.stop()
+
+if df.empty:
+    st.warning("⚠️ The uploaded dataset is empty. Please upload a dataset containing at least one row.")
+    st.stop()
+
+try:
+    column_types = detect_column_types(df)
+except Exception:
+    column_types = {"numeric": [], "categorical": [], "datetime": [], "text": []}
+
+try:
+    kpis = calculate_kpis(df)
+except Exception:
+    kpis = {}
+
+tabs = st.tabs([
+    "📊 Overview",
+    "🛠️ Dashboard Builder",
+    "📈 Statistics",
+    "🚨 Business Insights",
+    "🔎 Domain Research",
+    "💡 Recommendations",
+    "🤖 Ask Data",
+    "📄 Final Report",
+])
+
+# ==========================================================
+# OVERVIEW
+# ==========================================================
+
+with tabs[0]:
+
+    st.markdown(
+        '<div class="section-title">'
+        'Business Overview'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.write(
+        "This page contains only the most important "
+        "information required for business understanding."
+    )
+
+    cols = st.columns(4)
+
+    cols[0].metric(
+        "Total Records",
+        f"{len(df):,}"
+    )
+
+    cols[1].metric(
+        "Total Columns",
+        len(df.columns)
+    )
+
+    cols[2].metric(
+        "Missing Values",
+        f"{df.isna().sum().sum():,}"
+    )
+
+    cols[3].metric(
+        "Data Quality",
+        f"{get_data_quality_score(df)}%"
+    )
+
+    st.divider()
+
+    st.subheader(
+        "Business-Level Metrics"
+    )
+
+    numeric_summary = get_numeric_summary(
+        df
+    )
+
+    if not numeric_summary.empty:
+
+        st.dataframe(
+            numeric_summary,
+            use_container_width=True
+        )
+
+    st.subheader(
+        "Data Coverage"
+    )
+
+    c1, c2, c3 = st.columns(3)
+
+    c1.metric(
+        "Numeric Columns",
+        len(column_types["numeric"])
+    )
+
+    c2.metric(
+        "Categorical Columns",
+        len(column_types["categorical"])
+    )
+
+    c3.metric(
+        "Date Columns",
+        len(column_types["date"])
+    )
+
+
+# ==========================================================
+# DASHBOARD BUILDER
+# ==========================================================
+
+with tabs[1]:
+
+    st.markdown(
+        '<div class="section-title">'
+        '📊 Dashboard Builder'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.write(
+        "Automatically generated business sheets with "
+        "5 charts per sheet. Use the customizer to change "
+        "the chart, metric, dimension, colour, title and position."
+    )
+
+    control1, control2, control3 = st.columns(
+        [2, 2, 2]
+    )
+
+    with control1:
+
+        if st.button(
+            "🔄 Generate / Regenerate Dashboard",
+            key="regenerate_dashboard",
+            use_container_width=True
+        ):
+
+            st.session_state.sheets = (
+                generate_sheet_templates(
+                    df,
+                    sheet_count
+                )
+            )
+
+            for si, sheet in enumerate(
+                st.session_state.sheets
+            ):
+
+                for ci, chart in enumerate(
+                    sheet.get(
+                        "charts",
+                        []
+                    )
+                ):
+
+                    chart["chart_id"] = (
+                        f"sheet{si}_chart{ci}"
+                    )
+
+                    chart["position"] = (
+                        ci + 1
+                    )
+
+                    chart["color"] = DASHBOARD_PALETTE[
+                        (si * 5 + ci) % len(DASHBOARD_PALETTE)
+                    ]
+
+            st.rerun()
+
+    with control2:
+
+        layout_columns = st.selectbox(
+            "🧩 Dashboard Layout",
+            [1, 2, 3],
+            index=1,
+            key="dashboard_layout_columns",
+            help=(
+                "Choose how many chart columns are displayed "
+                "in each dashboard sheet."
+            )
+        )
+
+    with control3:
+
+        total_charts = sum(
+            len(
+                sheet.get(
+                    "charts",
+                    []
+                )
+            )
+            for sheet in st.session_state.sheets
+        )
+
+        st.metric(
+            "📊 Dashboard Charts",
+            total_charts
+        )
+
+    st.divider()
+
+    sheet_tabs = st.tabs(
+        [
+            sheet["name"]
+            for sheet in st.session_state.sheets
+        ]
+    )
+
+    for sheet_index, (
+        sheet_tab,
+        sheet
+    ) in enumerate(
+        zip(
+            sheet_tabs,
+            st.session_state.sheets
+        )
+    ):
+
+        with sheet_tab:
+
+            st.subheader(
+                f"📁 {sheet['name']}"
+            )
+
+            st.caption(
+                sheet["description"]
+            )
+
+            charts = sheet.get(
+                "charts",
+                []
+            )
+
+            for chart_index, chart in enumerate(
+                charts
+            ):
+
+                chart.setdefault(
+                    "chart_id",
+                    f"sheet{sheet_index}_chart{chart_index}"
+                )
+
+                chart.setdefault(
+                    "position",
+                    chart_index + 1
+                )
+
+            st.write(
+                f"Charts in this sheet: **{len(charts)}**"
+            )
+
+            st.divider()
+
+            st.markdown(
+                "### 🎨 Customize Dashboard"
+            )
+
+            chart_labels = [
+                (
+                    f"Chart {i + 1}: "
+                    f"{chart.get('title', 'Business Chart')}"
+                )
+                for i, chart in enumerate(
+                    charts
+                )
+            ]
+
+            selected_chart_index = st.selectbox(
+                "Select a chart to customize",
+                range(len(charts)),
+                format_func=lambda i:
+                    chart_labels[i],
+                key=f"selected_chart_{sheet_index}"
+            )
+
+            selected_chart = charts[
+                selected_chart_index
+            ]
+
+            with st.container(
+                border=True
+            ):
+
+                st.markdown(
+                    f"**Editing:** Chart "
+                    f"{selected_chart_index + 1} — "
+                    f"{selected_chart.get('title', 'Business Chart')}"
+                )
+
+                edit1, edit2, edit3 = st.columns(3)
+
+                with edit1:
+
+                    numeric_options = (
+                        df.select_dtypes(
+                            include="number"
+                        )
+                        .columns
+                        .tolist()
+                    )
+
+                    metric_options = (
+                        numeric_options
+                        if numeric_options
+                        else ["None"]
+                    )
+
+                    current_metric = (
+                        selected_chart.get(
+                            "metric"
+                        )
+                    )
+
+                    metric_index = (
+                        metric_options.index(
+                            current_metric
+                        )
+                        if current_metric
+                        in metric_options
+                        else 0
+                    )
+
+                    new_metric = st.selectbox(
+                        "📊 Metric",
+                        metric_options,
+                        index=metric_index,
+                        key=(
+                            f"edit_metric_"
+                            f"{sheet_index}_"
+                            f"{selected_chart_index}"
+                        )
+                    )
+
+                    if new_metric == "None":
+                        new_metric = None
+
+                with edit2:
+
+                    dimension_options = [
+                        "None"
+                    ] + (
+                        df.select_dtypes(
+                            include=[
+                                "object",
+                                "category",
+                                "bool",
+                                "datetime"
+                            ]
+                        )
+                        .columns
+                        .tolist()
+                    )
+
+                    current_dimension = (
+                        selected_chart.get(
+                            "category"
+                        )
+                    )
+
+                    dimension_index = (
+                        dimension_options.index(
+                            current_dimension
+                        )
+                        if current_dimension
+                        in dimension_options
+                        else 0
+                    )
+
+                    new_dimension = st.selectbox(
+                        "🏷️ Dimension",
+                        dimension_options,
+                        index=dimension_index,
+                        key=(
+                            f"edit_dimension_"
+                            f"{sheet_index}_"
+                            f"{selected_chart_index}"
+                        )
+                    )
+
+                    if new_dimension == "None":
+                        new_dimension = None
+
+                with edit3:
+
+                    chart_types = [
+                        "Bar",
+                        "Line",
+                        "Area",
+                        "Pie",
+                        "Histogram",
+                        "Scatter",
+                        "Box"
+                    ]
+
+                    current_type = selected_chart.get(
+                        "chart_type",
+                        "Bar"
+                    )
+
+                    type_index = (
+                        chart_types.index(
+                            current_type
+                        )
+                        if current_type
+                        in chart_types
+                        else 0
+                    )
+
+                    new_chart_type = st.selectbox(
+                        "📈 Chart Type",
+                        chart_types,
+                        index=type_index,
+                        key=(
+                            f"edit_type_"
+                            f"{sheet_index}_"
+                            f"{selected_chart_index}"
+                        )
+                    )
+
+                edit4, edit5, edit6 = st.columns(3)
+
+                with edit4:
+
+                    new_color = st.color_picker(
+                        "🎨 Chart Color",
+                        selected_chart.get(
+                            "color",
+                            "#2563EB"
+                        ),
+                        key=(
+                            f"edit_color_"
+                            f"{sheet_index}_"
+                            f"{selected_chart_index}"
+                        )
+                    )
+
+                with edit5:
+
+                    new_title = st.text_input(
+                        "✏️ Chart Title",
+                        selected_chart.get(
+                            "title",
+                            "Business Chart"
+                        ),
+                        key=(
+                            f"edit_title_"
+                            f"{sheet_index}_"
+                            f"{selected_chart_index}"
+                        )
+                    )
+
+                with edit6:
+
+                    position_options = list(
+                        range(
+                            1,
+                            len(charts) + 1
+                        )
+                    )
+
+                    current_position = (
+                        selected_chart.get(
+                            "position",
+                            selected_chart_index + 1
+                        )
+                    )
+
+                    if (
+                        current_position
+                        not in position_options
+                    ):
+                        current_position = (
+                            selected_chart_index + 1
+                        )
+
+                    new_position = st.selectbox(
+                        "↕️ Chart Position",
+                        position_options,
+                        index=position_options.index(
+                            current_position
+                        ),
+                        key=(
+                            f"edit_position_"
+                            f"{sheet_index}_"
+                            f"{selected_chart_index}"
+                        ),
+                        help=(
+                            "Position 1 appears first, position 2 "
+                            "second, and so on. If another chart "
+                            "already has the selected position, the "
+                            "two charts will swap positions."
+                        )
+                    )
+
+                button1, button2 = st.columns(2)
+
+                with button1:
+
+                    if st.button(
+                        "💾 Apply Chart Changes",
+                        key=(
+                            f"apply_customization_"
+                            f"{sheet_index}_"
+                            f"{selected_chart_index}"
+                        ),
+                        use_container_width=True,
+                        type="primary"
+                    ):
+
+                        old_position = (
+                            selected_chart.get(
+                                "position",
+                                selected_chart_index + 1
+                            )
+                        )
+
+                        # Swap positions when needed.
+                        if new_position != old_position:
+                            for other_index, other_chart in enumerate(charts):
+                                if (
+                                    other_index != selected_chart_index
+                                    and other_chart.get(
+                                        "position",
+                                        other_index + 1
+                                    ) == new_position
+                                ):
+                                    other_chart["position"] = old_position
+                                    break
+
+                        selected_chart["metric"] = new_metric
+                        selected_chart["category"] = new_dimension
+                        selected_chart["chart_type"] = new_chart_type
+                        selected_chart["color"] = new_color
+                        selected_chart["title"] = (
+                            new_title.strip()
+                            or "Business Chart"
+                        )
+                        selected_chart["position"] = new_position
+
+                        st.success(
+                            "✅ Chart customization saved."
+                        )
+
+                        st.rerun()
+
+                with button2:
+
+                    if st.button(
+                        "🔄 Reset This Chart",
+                        key=(
+                            f"reset_customization_"
+                            f"{sheet_index}_"
+                            f"{selected_chart_index}"
+                        ),
+                        use_container_width=True
+                    ):
+
+                        selected_chart["chart_type"] = "Bar"
+
+                        selected_chart["color"] = "#22D3EE"
+
+                        selected_chart["title"] = (
+                            f"Business Chart "
+                            f"{selected_chart_index + 1}"
+                        )
+
+                        selected_chart["position"] = (
+                            selected_chart_index + 1
+                        )
+
+                        st.rerun()
+
+            st.divider()
+
+            st.markdown(
+                "### 📊 Dashboard Preview"
+            )
+
+            ordered_charts = sorted(
+                charts,
+                key=lambda chart:
+                    chart.get(
+                        "position",
+                        999
+                    )
+            )
+
+            chart_columns = st.columns(
+                layout_columns
+            )
+
+            for display_index, chart in enumerate(
+                ordered_charts
+            ):
+
+                with chart_columns[
+                    display_index % layout_columns
+                ]:
+
+                    fig = create_chart(
+                        df,
+                        category=chart.get(
+                            "category"
+                        ),
+                        metric=chart.get(
+                            "metric"
+                        ),
+                        chart_type=chart.get(
+                            "chart_type",
+                            "Bar"
+                        ),
+                        color=chart.get(
+                            "color",
+                            "#22D3EE"
+                        ),
+                        title=chart.get(
+                            "title",
+                            "Business Chart"
+                        )
+                    )
+
+                    fig = _style_neon_figure(fig, chart)
+
+                    st.plotly_chart(
+                        fig,
+                        use_container_width=True,
+                        key=(
+                            f"dashboard_chart_"
+                            f"{sheet_index}_"
+                            f"{chart.get('chart_id', display_index)}"
+                        )
+                    )
+
+            st.success(
+                f"✅ {sheet['name']} contains "
+                f"{len(charts)} charts."
+            )
+
+    st.divider()
+
+    st.metric(
+        "TOTAL DASHBOARD CHARTS",
+        total_charts
+    )
+
+
+# Keep the dedicated dashboard page synchronized with the active dataset and
+# the exact chart configuration shown in the main Dashboard Builder.
+# This runs on normal main-page reruns as well as after chart customizations.
+try:
+    _save_dashboard_snapshot(
+        st.session_state.get("df", df),
+        st.session_state.get("sheets", []),
+    )
+except Exception as snapshot_sync_error:
+    st.warning(
+        "Could not synchronize the main dashboard with the dashboard link: "
+        f"{snapshot_sync_error}"
+    )
+
+
+# ==========================================================
+# STATISTICS
+# ==========================================================
+
+with tabs[2]:
+
+    st.markdown(
+        '<div class="section-title">'
+        'Statistical Analysis'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.subheader(
+        "Summary Statistics"
+    )
+
+    statistics = get_summary_statistics(
+        df
+    )
+
+    if not statistics.empty:
+
+        st.dataframe(
+            statistics,
+            use_container_width=True
+        )
+
+    st.subheader(
+        "Outlier Analysis"
+    )
+
+    outliers = detect_outliers(
+        df
+    )
+
+    if not outliers.empty:
+
+        st.dataframe(
+            outliers,
+            use_container_width=True
+        )
+
+    st.subheader(
+        "Correlation Analysis"
+    )
+
+    correlations = calculate_correlations(
+        df
+    )
+
+    if not correlations.empty:
+
+        st.dataframe(
+            correlations,
+            use_container_width=True
+        )
+
+
+# ==========================================================
+# BUSINESS INSIGHTS
+# ==========================================================
+
+with tabs[3]:
+
+    st.markdown(
+        '<div class="section-title">🚨 Business Insights</div>',
+        unsafe_allow_html=True
+    )
+
+    st.write(
+        "This page interprets the actual dashboard and dataset "
+        "evidence to identify important business patterns, barriers "
+        "and areas that require further investigation."
+    )
+
+    insights = st.session_state.insights
+
+    # ------------------------------------------------------
+    # EXECUTIVE BUSINESS SUMMARY
+    # ------------------------------------------------------
+
+    st.markdown("### 📌 Executive Business Summary")
+
+    if insights is None or getattr(insights, "empty", True):
+
+        st.info(
+            "No business insights were generated for this dataset."
+        )
+
+    else:
+
+        insight_count = len(insights)
+        high_count = 0
+        medium_count = 0
+        low_count = 0
+
+        if "Severity" in insights.columns:
+            severity_series = (
+                insights["Severity"]
+                .astype(str)
+                .str.upper()
+            )
+            high_count = int((severity_series == "HIGH").sum())
+            medium_count = int((severity_series == "MEDIUM").sum())
+            low_count = int((severity_series == "LOW").sum())
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        with c1:
+            st.metric("Business Findings", insight_count)
+
+        with c2:
+            st.metric("High Attention", high_count)
+
+        with c3:
+            st.metric("Medium Attention", medium_count)
+
+        with c4:
+            st.metric("Monitoring Areas", low_count)
+
+        st.markdown(
+            "The findings below are based on the available dataset "
+            "evidence and the analytical outputs generated by the platform."
+        )
+
+    st.divider()
+
+    # ------------------------------------------------------
+    # KEY BUSINESS SIGNALS
+    # ------------------------------------------------------
+
+    st.markdown("### 📊 Key Business Signals")
+
+    if insights is not None and not insights.empty:
+
+        signal_rows = list(
+            insights.head(4).iterrows()
+        )
+
+        signal_columns = st.columns(
+            max(1, min(2, len(signal_rows)))
+        )
+
+        for display_index, (_, row) in enumerate(signal_rows):
+
+            with signal_columns[display_index % len(signal_columns)]:
+
+                area = str(
+                    row.get("Area", "Business Area")
+                )
+
+                problem = str(
+                    row.get("Problem", "Important business pattern identified.")
+                )
+
+                evidence = str(
+                    row.get("Evidence", "Evidence available in the analysis.")
+                )
+
+                severity = str(
+                    row.get("Severity", "INFO")
+                ).upper()
+
+                icon = {
+                    "HIGH": "🔴",
+                    "MEDIUM": "🟠",
+                    "LOW": "🔵"
+                }.get(severity, "🔵")
+
+                st.markdown(
+                    f"""
+                    <div class="business-card">
+                        <h4>{icon} {area}</h4>
+                        <p><b>What the data shows:</b><br>{problem}</p>
+                        <p><b>Evidence:</b><br>{evidence}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
+    else:
+
+        st.info("No key business signals are available yet.")
+
+    st.divider()
+
+    # ------------------------------------------------------
+    # BUSINESS PROBLEMS / BARRIERS
+    # ------------------------------------------------------
+
+    st.markdown("### 🚨 Business Problems / Barriers")
+
+    if insights is not None and not insights.empty:
+
+        for _, row in insights.iterrows():
+
+            area = str(
+                row.get("Area", "Business Area")
+            )
+
+            problem = str(
+                row.get("Problem", "Business pattern identified.")
+            )
+
+            impact = str(
+                row.get("Business Impact", "Further business investigation may be required.")
+            )
+
+            evidence = str(
+                row.get("Evidence", "Evidence available in the dataset analysis.")
+            )
+
+            severity = str(
+                row.get("Severity", "INFO")
+            ).upper()
+
+            if severity == "HIGH":
+                st.error(
+                    f"🔴 {area}\n\n"
+                    f"**Problem:** {problem}\n\n"
+                    f"**Why it matters:** {impact}\n\n"
+                    f"**Evidence:** {evidence}"
+                )
+
+            elif severity == "MEDIUM":
+                st.warning(
+                    f"🟠 {area}\n\n"
+                    f"**Problem:** {problem}\n\n"
+                    f"**Why it matters:** {impact}\n\n"
+                    f"**Evidence:** {evidence}"
+                )
+
+            else:
+                st.info(
+                    f"🔵 {area}\n\n"
+                    f"**Problem / Observation:** {problem}\n\n"
+                    f"**Why it matters:** {impact}\n\n"
+                    f"**Evidence:** {evidence}"
+                )
+
+    else:
+
+        st.info(
+            "The application could not identify a business barrier "
+            "from the available evidence."
+        )
+
+    st.divider()
+
+    # ------------------------------------------------------
+    # IMPORTANT TRENDS
+    # ------------------------------------------------------
+
+    st.markdown("### 📈 Important Trends / Patterns")
+
+    if insights is not None and not insights.empty:
+
+        for _, row in insights.head(6).iterrows():
+
+            area = str(
+                row.get("Area", "Business Area")
+            )
+
+            problem = str(
+                row.get("Problem", "Pattern identified from the dataset.")
+            )
+
+            st.markdown(
+                f"**{area} →** {problem}"
+            )
+
+    else:
+
+        st.info("No trend-level observations are available.")
+
+    st.divider()
+
+    # ------------------------------------------------------
+    # DATA QUALITY / ATTENTION AREAS
+    # ------------------------------------------------------
+
+    st.markdown("### ⚠️ Areas Requiring Attention")
+
+    missing_total = int(
+        df.isna().sum().sum()
+    )
+
+    duplicate_total = int(
+        df.duplicated().sum()
+    )
+
+    attention_items = []
+
+    if missing_total > 0:
+        attention_items.append(
+            f"🟠 Missing data requires review across "
+            f"{int((df.isna().sum() > 0).sum())} columns."
+        )
+    else:
+        attention_items.append(
+            "🟢 No missing values were detected in the uploaded dataset."
+        )
+
+    if duplicate_total > 0:
+        attention_items.append(
+            f"🟠 {duplicate_total:,} duplicate rows require review."
+        )
+    else:
+        attention_items.append(
+            "🟢 No duplicate rows were detected."
+        )
+
+    for item in attention_items:
+        st.markdown(f"- {item}")
+
+    # ------------------------------------------------------
+    # OVERALL BUSINESS INTERPRETATION
+    # ------------------------------------------------------
+
+    st.divider()
+
+    st.markdown("### 📌 Overall Business Interpretation")
+
+    if insights is not None and not insights.empty:
+
+        areas = []
+        for _, row in insights.head(5).iterrows():
+            area = str(row.get("Area", ""))
+            if area and area not in areas:
+                areas.append(area)
+
+        focus_text = ", ".join(areas)
+
+        st.success(
+            "The dataset contains business patterns that can be "
+            "translated into specific areas for investigation. "
+            f"The main areas identified by the current analysis are: "
+            f"{focus_text}. Review the dashboard charts and statistical "
+            "results before making operational decisions."
+        )
+
+    else:
+
+        st.info(
+            "No overall business interpretation is available yet."
+        )
+
+
+# ==========================================================
+# DOMAIN RESEARCH
+# ==========================================================
+
+with tabs[4]:
+
+    st.markdown(
+        '<div class="section-title">🔎 Domain Research</div>',
+        unsafe_allow_html=True
+    )
+
+    research = st.session_state.research_result
+    detailed_research = st.session_state.get(
+        "basic_data_explanation",
+        None
+    )
+
+    if not research:
+
+        st.info(
+            "Upload a dataset to start domain research."
+        )
+
+    else:
+
+        domain = research.get(
+            "domain",
+            "General Business Analytics"
+        )
+
+        # --------------------------------------------------
+        # DETECTED DOMAIN
+        # --------------------------------------------------
+
+        st.markdown(
+            f"""
+            <div style="background:#E8F8EE;padding:20px 24px;"
+                 "border-radius:12px;color:#087F3F;font-size:18px;">
+                🔎 <b>Detected dataset domain:</b> {domain}
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        st.divider()
+
+        # --------------------------------------------------
+        # RESEARCH BASED ANALYSIS
+        # --------------------------------------------------
+
+        st.markdown("### 🌐 Research-Based Analysis")
+
+        st.write(
+            research.get(
+                "analysis",
+                "No research result available."
+            )
+        )
+
+        # --------------------------------------------------
+        # WHAT IS THIS DATASET?
+        # --------------------------------------------------
+
+        st.markdown("### 🏢 What is this dataset?")
+
+        dataset_description = (
+            detailed_research.get(
+                "dataset_description"
+            )
+            if detailed_research
+            else research.get(
+                "analysis",
+                "No dataset explanation available."
+            )
+        )
+
+        st.info(dataset_description)
+
+        # --------------------------------------------------
+        # DETECTED BUSINESS DOMAIN
+        # --------------------------------------------------
+
+        st.markdown("### 🔎 Detected Business Domain")
+
+        st.success(domain)
+
+        # --------------------------------------------------
+        # DATASET PROFILE
+        # --------------------------------------------------
+
+        st.markdown("### 📊 Dataset Profile")
+
+        numeric_count = len(
+            df.select_dtypes(include="number").columns
+        )
+
+        categorical_count = len(
+            df.select_dtypes(
+                include=["object", "category", "bool"]
+            ).columns
+        )
+
+        date_count = len(
+            df.select_dtypes(
+                include=["datetime"]
+            ).columns
+        )
+
+        missing_count = int(
+            df.isna().sum().sum()
+        )
+
+        duplicate_count = int(
+            df.duplicated().sum()
+        )
+
+        profile_cols = st.columns(6)
+
+        profile_values = [
+            ("Records", f"{len(df):,}"),
+            ("Columns", f"{len(df.columns):,}"),
+            ("Numeric", f"{numeric_count:,}"),
+            ("Categorical", f"{categorical_count:,}"),
+            ("Missing", f"{missing_count:,}"),
+            ("Duplicates", f"{duplicate_count:,}"),
+        ]
+
+        for column, (label, value) in zip(
+            profile_cols,
+            profile_values
+        ):
+            with column:
+                st.metric(label, value)
+
+        # --------------------------------------------------
+        # WHAT CAN THIS DATA BE USED FOR?
+        # --------------------------------------------------
+
+        st.markdown("### 🎯 What can this type of data be used for?")
+
+        business_uses = (
+            detailed_research.get(
+                "business_uses",
+                []
+            )
+            if detailed_research
+            else []
+        )
+
+        if not business_uses:
+            business_uses = [
+                "Business performance monitoring",
+                "Trend and group comparison",
+                "Data quality monitoring",
+                "Identification of important business patterns",
+                "Decision support and further investigation",
+            ]
+
+        for use_case in business_uses:
+            st.markdown(
+                f"- {use_case}"
+            )
+
+        # --------------------------------------------------
+        # IMPORTANT VARIABLES
+        # --------------------------------------------------
+
+        st.markdown("### ⭐ Important Variables")
+
+        numeric_columns = [
+            str(c)
+            for c in df.select_dtypes(
+                include="number"
+            ).columns
+        ]
+
+        categorical_columns = [
+            str(c)
+            for c in df.select_dtypes(
+                include=["object", "category", "bool"]
+            ).columns
+        ]
+
+        variable_cols = st.columns(2)
+
+        with variable_cols[0]:
+            st.markdown("**📌 KPI / Measure Candidates**")
+            if numeric_columns:
+                for col in numeric_columns[:10]:
+                    st.markdown(f"- `{col}`")
+            else:
+                st.write("No numeric measures detected.")
+
+        with variable_cols[1]:
+            st.markdown("**📌 Dimension / Segmentation Candidates**")
+            if categorical_columns:
+                for col in categorical_columns[:10]:
+                    st.markdown(f"- `{col}`")
+            else:
+                st.write("No categorical dimensions detected.")
+
+        # --------------------------------------------------
+        # COLUMN-BY-COLUMN EXPLANATION
+        # --------------------------------------------------
+
+        st.markdown("### 📋 Column-by-Column Explanation")
+
+        column_rows = (
+            detailed_research.get(
+                "column_rows",
+                []
+            )
+            if detailed_research
+            else []
+        )
+
+        if column_rows:
+
+            column_df = pd.DataFrame(
+                column_rows
+            )
+
+            st.dataframe(
+                column_df,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        else:
+
+            fallback_rows = []
+
+            for column in df.columns:
+
+                series = df[column]
+                dtype = str(series.dtype)
+
+                fallback_rows.append(
+                    {
+                        "Column": column,
+                        "Data Type": dtype,
+                        "Meaning / Explanation": (
+                            "Numeric field that can be summarized and compared."
+                            if pd.api.types.is_numeric_dtype(series)
+                            else
+                            "Categorical/text field that can be grouped and compared."
+                        ),
+                        "Missing Values": int(series.isna().sum()),
+                        "Unique Values": int(series.nunique(dropna=True)),
+                    }
+                )
+
+            st.dataframe(
+                pd.DataFrame(fallback_rows),
+                use_container_width=True,
+                hide_index=True
+            )
+
+        # --------------------------------------------------
+        # POTENTIAL RELATIONSHIPS
+        # --------------------------------------------------
+
+        st.markdown("### 🔗 Potential Variable Relationships")
+
+        if len(numeric_columns) >= 2:
+
+            st.info(
+                "Potential relationships to investigate: "
+                f"`{numeric_columns[0]}` ↔ `{numeric_columns[1]}`"
+                + (
+                    f", `{numeric_columns[0]}` ↔ `{numeric_columns[2]}`."
+                    if len(numeric_columns) >= 3
+                    else "."
+                )
+                + " These are analytical candidates, not proof of causation."
+            )
+
+        elif numeric_columns and categorical_columns:
+
+            st.info(
+                f"Compare `{numeric_columns[0]}` across "
+                f"`{categorical_columns[0]}` to investigate group-level patterns."
+            )
+
+        else:
+
+            st.info(
+                "The current dataset does not contain enough structured "
+                "fields to suggest a variable relationship automatically."
+            )
+
+        # --------------------------------------------------
+        # BUSINESS QUESTIONS
+        # --------------------------------------------------
+
+        st.markdown("### 💬 Business Questions This Dataset Can Answer")
+
+        generated_questions = generate_data_questions(
+            df
+        )
+
+        for index, question in enumerate(
+            generated_questions[:10],
+            start=1
+        ):
+            st.markdown(
+                f"**{index}.** {question}"
+            )
+
+        # --------------------------------------------------
+        # DATA QUALITY OBSERVATIONS
+        # --------------------------------------------------
+
+        st.markdown("### 🧹 Data Quality Observations")
+
+        if missing_count == 0:
+            st.success(
+                "No missing values were detected in the uploaded dataset."
+            )
+        else:
+            st.warning(
+                f"{missing_count:,} missing values were detected. "
+                "Columns containing missing data should be reviewed before modeling or reporting."
+            )
+
+        if duplicate_count == 0:
+            st.success(
+                "No duplicate rows were detected."
+            )
+        else:
+            st.warning(
+                f"{duplicate_count:,} duplicate rows were detected. "
+                "Review whether they represent valid repeated observations or duplicate records."
+            )
+
+        # --------------------------------------------------
+        # RESEARCH SOURCES
+        # --------------------------------------------------
+
+        sources = st.session_state.research_sources
+
+        if sources:
+
+            st.markdown("### 📚 Research Sources")
+
+            for source in sources:
+
+                title = source.get(
+                    "title",
+                    "Web Source"
+                )
+
+                url = source.get(
+                    "url",
+                    ""
+                )
+
+                snippet = source.get(
+                    "snippet",
+                    ""
+                )
+
+                if url:
+                    st.markdown(
+                        f"**{title}**"
+                    )
+                    if snippet:
+                        st.caption(snippet)
+                    st.markdown(
+                        f"[Open source →]({url})"
+                    )
+                    st.divider()
+
+        else:
+
+            st.caption(
+                "No external research sources were returned. "
+                "The displayed explanations are based on the uploaded dataset structure."
+            )
+
+        st.caption(
+            "Field meanings that cannot be verified from an authoritative "
+            "source are presented as analytical interpretations rather than "
+            "confirmed data-dictionary definitions."
+        )
+
+
+# RECOMMENDATIONS
+# ==========================================================
+
+with tabs[5]:
+
+    st.markdown(
+        '<div class="section-title">'
+        '💡 Recommendations'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.write(
+        "Recommendations are generated from the actual uploaded "
+        "dataset. Each business problem is evaluated using the "
+        "available data before a recommendation is produced."
+    )
+
+    st.divider()
+
+    recommendations = st.session_state.get(
+        "recommendations",
+        []
+    )
+
+    if not recommendations:
+
+        st.info(
+            "No recommendation areas were identified "
+            "from the uploaded dataset."
+        )
+
+    else:
+
+        st.markdown(
+            "## 📊 Analysis Summary"
+        )
+
+        st.write(
+            f"{len(recommendations)} data-driven analysis "
+            "areas were identified from the uploaded dataset."
+        )
+
+        st.divider()
+
+        for index, rec in enumerate(
+            recommendations,
+            start=1
+        ):
+
+            business_area = rec.get(
+                "Business Area",
+                "Business Analysis"
+            )
+
+            status = rec.get(
+                "Status",
+                "🟡 Needs Investigation"
+            )
+
+            if "🔴" in status:
+
+                status_title = (
+                    "🔴 Problem Detected"
+                )
+
+            elif "🟢" in status:
+
+                status_title = (
+                    "🟢 No Evidence Detected"
+                )
+
+            else:
+
+                status_title = (
+                    "🟡 Needs Investigation"
+                )
+
+            st.markdown(
+                f"## 📌 {index}. {business_area}"
+            )
+
+            st.markdown(
+                f"### {status_title}"
+            )
+
+            st.markdown(
+                "### 📊 Data Evidence"
+            )
+
+            evidence = rec.get(
+                "Evidence",
+                "No specific evidence was generated."
+            )
+
+            st.info(
+                evidence
+            )
+
+            st.markdown(
+                "### 🔎 Detailed Analysis"
+            )
+
+            detailed_analysis = rec.get(
+                "Detailed Analysis",
+                ""
+            )
+
+            if detailed_analysis:
+
+                st.write(
+                    detailed_analysis
+                )
+
+            factor_analysis = rec.get(
+                "Factor Analysis",
+                ""
+            )
+
+            if factor_analysis:
+
+                st.markdown(
+                    "### 📈 Factor / Group Analysis"
+                )
+
+                st.code(
+                    factor_analysis,
+                    language="text"
+                )
+
+            st.markdown(
+                "### ⚠️ Business Problem"
+            )
+
+            business_problem = rec.get(
+                "Business Impact",
+                ""
+            )
+
+            if business_problem:
+
+                st.write(
+                    business_problem
+                )
+
+            st.markdown(
+                "### 🛠️ Corrective Measures"
+            )
+
+            corrective_measures = rec.get(
+                "Corrective Measures",
+                []
+            )
+
+            if corrective_measures:
+
+                for number, action in enumerate(
+                    corrective_measures,
+                    start=1
+                ):
+
+                    st.write(
+                        f"**{number}.** {action}"
+                    )
+
+            else:
+
+                st.write(
+                    "No immediate corrective action is "
+                    "required based on the available data."
+                )
+
+            st.markdown(
+                "### 🔧 How to Improve Current Working"
+            )
+
+            improvement = rec.get(
+                "How to Improve Working",
+                ""
+            )
+
+            if improvement:
+
+                st.write(
+                    improvement
+                )
+
+            workflow = rec.get(
+                "Workflow",
+                ""
+            )
+
+            if workflow:
+
+                st.markdown(
+                    "### 🔄 Recommended Review Process"
+                )
+
+                st.code(
+                    workflow,
+                    language="text"
+                )
+
+            st.markdown(
+                "### 🚀 Development Opportunity"
+            )
+
+            development = rec.get(
+                "Development Opportunity",
+                ""
+            )
+
+            if development:
+
+                st.success(
+                    development
+                )
+
+            st.markdown(
+                "### 🎯 Expected Outcome"
+            )
+
+            expected = rec.get(
+                "Expected Outcome",
+                ""
+            )
+
+            if expected:
+
+                st.write(
+                    expected
+                )
+
+            additional_data = rec.get(
+                "Additional Data Required",
+                []
+            )
+
+            if additional_data:
+
+                st.markdown(
+                    "### 📥 Additional Data Required"
+                )
+
+                for item in additional_data:
+
+                    st.write(
+                        f"- {item}"
+                    )
+
+            st.markdown(
+                "### ⚠️ Limitation"
+            )
+
+            limitation = rec.get(
+                "Limitation",
+                (
+                    "The dataset shows patterns and "
+                    "associations. It does not automatically "
+                    "prove causation."
+                )
+            )
+
+            st.warning(
+                limitation
+            )
+
+            st.divider()
+
+
+# ==========================================================
+# REAL DATA-DRIVEN ASK DATA ENGINE
+# ==========================================================
+
+def _find_column_ci(df, candidates):
+
+    lookup = {
+        str(c).strip().lower(): c
+        for c in df.columns
+    }
+
+    for c in candidates:
+
+        key = str(c).strip().lower()
+
+        if key in lookup:
+            return lookup[key]
+
+    return None
+
+
+def _binary_positive_mask(series):
+
+    values = (
+        series
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    positive = {
+        "yes",
+        "y",
+        "1",
+        "true",
+        "left",
+        "leaver",
+        "attrited",
+        "churned",
+        "fraud",
+        "default",
+        "converted",
+        "purchase",
+        "purchased"
+    }
+
+    return values.isin(
+        positive
+    )
+
+
+def _answer_user_request(df, request, target_dimension=None):
+    """Answer professional natural-language questions directly from the uploaded dataframe."""
+    if df is None or df.empty:
+        return {
+            "mode": "analysis",
+            "title": "No Data",
+            "answer": "Please upload a dataset before asking a question.",
+            "evidence": "No dataframe is currently available.",
+            "table": None,
+            "note": "Upload a CSV or Excel dataset and ask a business question."
+        }
+
+    q_original = str(request or "").strip()
+    if not q_original:
+        return None
+
+    q = q_original.lower().strip()
+
+    def normalize(value):
+        return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
+
+    normalized_q = normalize(q)
+    all_columns = list(df.columns)
+    numeric_columns = df.select_dtypes(include="number").columns.tolist()
+    categorical_columns = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+
+    def find_column(columns, aliases):
+        normalized_columns = {c: normalize(c) for c in columns}
+        # Exact/contained matches first.
+        for alias in aliases:
+            a = normalize(alias)
+            for col, col_norm in normalized_columns.items():
+                if col_norm == a or (a and a in col_norm) or (col_norm and col_norm in a):
+                    return col
+        # Word-set match.
+        for alias in aliases:
+            a_words = set(normalize(alias).split())
+            if not a_words:
+                continue
+            for col, col_norm in normalized_columns.items():
+                if a_words.issubset(set(col_norm.split())):
+                    return col
+        return None
+
+    def mentioned_column(columns):
+        # Prefer exact column-name phrases and longer names.
+        ordered = sorted(columns, key=lambda c: len(normalize(c)), reverse=True)
+        for col in ordered:
+            n = normalize(col)
+            if n and n in normalized_q:
+                return col
+        return None
+
+    # ------------------------------------------------------
+    # Detect outcome/target columns before generic numeric logic.
+    # This is the important fix for questions such as:
+    # "Which department has the highest attrition?"
+    # ------------------------------------------------------
+    attrition_col = find_column(all_columns, [
+        "Attrition", "Employee Attrition", "Turnover", "Employee Turnover", "Left"
+    ])
+    churn_col = find_column(all_columns, ["Churn", "Customer Churn", "Churn Status"])
+    outcome_col = find_column(all_columns, [
+        "Default", "Fraud", "Converted", "Conversion", "Response", "Purchased",
+        "Purchase", "Returned", "Defect", "Stockout", "Late", "Outcome", "Status"
+    ])
+
+    target_col = target_dimension if target_dimension in all_columns else None
+    if target_col is None:
+        if attrition_col and any(x in normalized_q for x in ["attrition", "turnover", "left employee"]):
+            target_col = attrition_col
+        elif churn_col and "churn" in normalized_q:
+            target_col = churn_col
+        elif outcome_col and any(x in normalized_q for x in [
+            "default", "fraud", "converted", "conversion", "response", "purchased",
+            "purchase", "returned", "defect", "stockout", "late", "outcome", "status"
+        ]):
+            target_col = outcome_col
+
+    def positive_mask(series):
+        """Return a boolean mask for the positive outcome in common binary targets."""
+        s = series.copy()
+        if pd.api.types.is_numeric_dtype(s):
+            numeric = pd.to_numeric(s, errors="coerce")
+            # Common binary encodings: 1 = positive, 0 = negative.
+            if numeric.notna().any() and set(numeric.dropna().unique()).issubset({0, 1}):
+                return numeric.eq(1).fillna(False)
+
+        positive_words = {
+            "yes", "y", "true", "1", "left", "attrited", "attrition", "churned", "churn",
+            "default", "fraud", "converted", "conversion", "purchased", "purchase",
+            "returned", "return", "defect", "defective", "late", "stockout", "positive"
+        }
+        values = s.astype(str).str.strip().str.lower()
+        normalized_values = values.map(normalize)
+        return normalized_values.apply(
+            lambda v: v in positive_words or any(w in v for w in positive_words if len(w) > 3)
+        ).fillna(False)
+
+    # Detect the dimension explicitly named in the question.
+    dimension = None
+    if target_col is not None:
+        dimension_candidates = [c for c in all_columns if c != target_col]
+    else:
+        dimension_candidates = all_columns
+
+    dimension = mentioned_column(dimension_candidates)
+
+    if dimension is None:
+        dimension_aliases = [
+            "department", "job role", "jobrole", "business travel", "overtime", "gender",
+            "marital status", "education", "education field", "job level", "job satisfaction",
+            "work life balance", "worklifebalance", "environment satisfaction", "relationship satisfaction",
+            "performance rating", "region", "city", "state", "country", "category", "product",
+            "customer", "segment", "channel", "campaign", "branch", "contract", "payment method", "service"
+        ]
+        dimension = find_column(all_columns, dimension_aliases)
+        if dimension == target_col:
+            dimension = None
+
+    # If the question says "department", "job role", etc., do not let a
+    # numeric metric be mistaken for the requested dimension.
+    if dimension is None and target_dimension in all_columns and target_dimension != target_col:
+        dimension = target_dimension
+
+    metric = mentioned_column(numeric_columns)
+    if metric is None:
+        metric = find_column(numeric_columns, [
+            "Sales", "Revenue", "Profit", "Amount", "Income", "Monthly Income", "Salary",
+            "Hourly Rate", "Daily Rate", "Monthly Rate", "Price", "Quantity", "Demand",
+            "Cost", "Spend", "Years At Company", "YearsAtCompany", "Age", "Job Level",
+            "Performance Rating", "Job Satisfaction", "Work Life Balance"
+        ])
+
+    asks_highest = any(x in normalized_q for x in ["highest", "maximum", "max", "most", "largest", "greatest", "top"])
+    asks_lowest = any(x in normalized_q for x in ["lowest", "minimum", "min", "least", "smallest"])
+    asks_average = any(x in normalized_q for x in ["average", "mean", "avg"])
+    asks_total = any(x in normalized_q for x in ["total", "sum"])
+    asks_count = any(x in normalized_q for x in [
+        "how many", "number of", "count", "most employees", "most records",
+        "highest number of records", "least records", "most common"
+    ])
+    asks_rate = any(x in normalized_q for x in ["rate", "percentage", "percent", "%", "ratio", "proportion"])
+
+    # ======================================================
+    # 1. TARGET / OUTCOME QUESTIONS FIRST
+    # ======================================================
+    if target_col is not None:
+        valid_target = df[target_col].dropna()
+
+        if asks_rate and len(valid_target) > 0:
+            positive = int(positive_mask(valid_target).sum())
+            rate = positive / len(valid_target) * 100
+            return {
+                "mode": "analysis",
+                "title": f"Overall {target_col} Rate",
+                "answer": f"The overall {target_col.lower()} rate is {rate:.1f}%.",
+                "evidence": f"{positive:,} of {len(valid_target):,} non-missing {target_col} records represent the positive outcome.",
+                "table": pd.DataFrame({
+                    "Metric": [f"{target_col} Rate"],
+                    "Positive Records": [positive],
+                    "Records": [len(valid_target)],
+                    "Rate (%)": [rate]
+                }),
+                "note": "Calculated directly from the uploaded dataset."
+            }
+
+        if dimension is not None:
+            temp = df[[dimension, target_col]].copy()
+            temp[dimension] = temp[dimension].fillna("Missing").astype(str).str.strip()
+            temp["_Positive"] = positive_mask(temp[target_col]).astype(int)
+            temp["_ValidTarget"] = temp[target_col].notna().astype(int)
+
+            grouped = temp.groupby(dimension, dropna=False).agg(
+                Records=("_ValidTarget", "sum"),
+                Positive=("_Positive", "sum")
+            ).reset_index()
+            grouped = grouped[grouped["Records"] > 0].copy()
+            grouped["Rate (%)"] = grouped["Positive"] / grouped["Records"] * 100
+
+            if not grouped.empty and (asks_highest or asks_lowest or asks_rate or target_col.lower() in normalized_q):
+                ascending = asks_lowest and not asks_highest
+                result_table = grouped.sort_values("Rate (%)", ascending=ascending).reset_index(drop=True)
+                selected = result_table.iloc[0]
+                direction = "lowest" if ascending else "highest"
+                label = selected[dimension]
+                return {
+                    "mode": "analysis",
+                    "title": f"{target_col} Rate by {dimension}",
+                    "answer": (
+                        f"'{label}' has the {direction} observed {target_col.lower()} rate "
+                        f"among {dimension} groups: {selected['Rate (%)']:.1f}%."
+                    ),
+                    "evidence": (
+                        f"{int(selected['Positive']):,} of {int(selected['Records']):,} records in "
+                        f"'{label}' are marked as the positive {target_col.lower()} outcome."
+                    ),
+                    "table": result_table.head(20),
+                    "note": "This is an observed group-level rate calculated from the uploaded data; it does not establish causation."
+                }
+
+    # ======================================================
+    # 2. CATEGORY / GROUP RECORD COUNTS
+    # ======================================================
+    if dimension is not None and asks_count:
+        values = df[dimension].fillna("Missing").astype(str).str.strip()
+        counts = values.value_counts(dropna=False).rename("Records").reset_index()
+        counts.columns = [str(dimension), "Records"]
+        ascending = asks_lowest and not asks_highest
+        table = counts.sort_values("Records", ascending=ascending).reset_index(drop=True)
+        row = table.iloc[0]
+        direction = "lowest" if ascending else "highest"
+        return {
+            "mode": "analysis",
+            "title": f"{direction.title()} Record Count — {dimension}",
+            "answer": f"'{row[str(dimension)]}' has the {direction} number of records in {dimension}: {int(row['Records']):,}.",
+            "evidence": f"Records were grouped by {dimension} and counted directly from the uploaded data.",
+            "table": table.head(20),
+            "note": "This is a descriptive record-count comparison."
+        }
+
+    # ======================================================
+    # 3. CATEGORY + NUMERIC METRIC
+    # ======================================================
+    if dimension is not None and metric is not None:
+        work = df[[dimension, metric]].copy()
+        work[metric] = pd.to_numeric(work[metric], errors="coerce")
+        work = work.dropna(subset=[metric])
+
+        if not work.empty:
+            grouped = work.groupby(dimension, dropna=False)[metric].agg(
+                Records="count", Average="mean", Total="sum"
+            ).reset_index()
+
+            if asks_highest and asks_average:
+                table = grouped.sort_values("Average", ascending=False).reset_index(drop=True)
+                row = table.iloc[0]
+                return {
+                    "mode": "analysis",
+                    "title": f"Highest Average {metric} by {dimension}",
+                    "answer": f"'{row[dimension]}' has the highest average {metric}: {row['Average']:,.2f}.",
+                    "evidence": f"The average {metric} was calculated for every {dimension} group.",
+                    "table": table.head(20),
+                    "note": "Observed group-level averages calculated directly from the uploaded data."
+                }
+
+            if asks_lowest and asks_average:
+                table = grouped.sort_values("Average", ascending=True).reset_index(drop=True)
+                row = table.iloc[0]
+                return {
+                    "mode": "analysis",
+                    "title": f"Lowest Average {metric} by {dimension}",
+                    "answer": f"'{row[dimension]}' has the lowest average {metric}: {row['Average']:,.2f}.",
+                    "evidence": f"The average {metric} was calculated for every {dimension} group.",
+                    "table": table.head(20),
+                    "note": "Observed group-level averages calculated directly from the uploaded data."
+                }
+
+            if asks_highest and asks_total:
+                table = grouped.sort_values("Total", ascending=False).reset_index(drop=True)
+                row = table.iloc[0]
+                return {
+                    "mode": "analysis",
+                    "title": f"Highest Total {metric} by {dimension}",
+                    "answer": f"'{row[dimension]}' has the highest total {metric}: {row['Total']:,.2f}.",
+                    "evidence": f"Total {metric} was calculated for every {dimension} group.",
+                    "table": table.head(20),
+                    "note": "Calculated directly from the uploaded data."
+                }
+
+            if asks_lowest and asks_total:
+                table = grouped.sort_values("Total", ascending=True).reset_index(drop=True)
+                row = table.iloc[0]
+                return {
+                    "mode": "analysis",
+                    "title": f"Lowest Total {metric} by {dimension}",
+                    "answer": f"'{row[dimension]}' has the lowest total {metric}: {row['Total']:,.2f}.",
+                    "evidence": f"Total {metric} was calculated for every {dimension} group.",
+                    "table": table.head(20),
+                    "note": "Calculated directly from the uploaded data."
+                }
+
+            if asks_average:
+                table = grouped.sort_values("Average", ascending=False).reset_index(drop=True)
+                return {
+                    "mode": "analysis",
+                    "title": f"Average {metric} by {dimension}",
+                    "answer": f"The overall average {metric} is {work[metric].mean():,.2f}. The table shows how it varies across {dimension}.",
+                    "evidence": f"{len(work):,} non-missing {metric} values were used.",
+                    "table": table.head(20),
+                    "note": "Calculated directly from the uploaded dataframe."
+                }
+
+            if asks_total:
+                table = grouped.sort_values("Total", ascending=False).reset_index(drop=True)
+                return {
+                    "mode": "analysis",
+                    "title": f"Total {metric} by {dimension}",
+                    "answer": f"The total {metric} is {work[metric].sum():,.2f}. The table shows the contribution of each {dimension} group.",
+                    "evidence": f"{len(work):,} non-missing {metric} values were included.",
+                    "table": table.head(20),
+                    "note": "Calculated directly from the uploaded dataframe."
+                }
+
+    # ======================================================
+    # 4. OVERALL NUMERIC QUESTIONS
+    # ======================================================
+    if metric is not None:
+        values = pd.to_numeric(df[metric], errors="coerce").dropna()
+        if len(values) > 0:
+            if asks_average:
+                value = float(values.mean())
+                return {
+                    "mode": "analysis",
+                    "title": f"Average {metric}",
+                    "answer": f"The average {metric} is {value:,.2f}.",
+                    "evidence": f"Calculated using {len(values):,} non-missing {metric} values.",
+                    "table": pd.DataFrame({"Metric": [metric], "Average": [value], "Records Used": [len(values)]}),
+                    "note": "Calculated directly from the uploaded dataframe."
+                }
+            if asks_highest:
+                value = float(values.max())
+                return {
+                    "mode": "analysis",
+                    "title": f"Highest {metric}",
+                    "answer": f"The highest {metric} is {value:,.2f}.",
+                    "evidence": f"Calculated from {len(values):,} non-missing values.",
+                    "table": pd.DataFrame({"Metric": [metric], "Highest Value": [value]}),
+                    "note": "Calculated directly from the uploaded dataframe."
+                }
+            if asks_lowest:
+                value = float(values.min())
+                return {
+                    "mode": "analysis",
+                    "title": f"Lowest {metric}",
+                    "answer": f"The lowest {metric} is {value:,.2f}.",
+                    "evidence": f"Calculated from {len(values):,} non-missing values.",
+                    "table": pd.DataFrame({"Metric": [metric], "Lowest Value": [value]}),
+                    "note": "Calculated directly from the uploaded dataframe."
+                }
+
+    # ======================================================
+    # 5. BASIC DATASET QUESTIONS
+    # ======================================================
+    if any(x in normalized_q for x in ["how many records", "number of records", "how many rows", "number of rows", "record count"]):
+        return {
+            "mode": "analysis",
+            "title": "Dataset Records",
+            "answer": f"The dataset contains {len(df):,} records.",
+            "evidence": f"The uploaded dataframe contains {len(df):,} rows.",
+            "table": None,
+            "note": "Calculated directly from the uploaded data."
+        }
+
+    if any(x in normalized_q for x in ["how many columns", "number of columns", "columns available", "number of fields"]):
+        return {
+            "mode": "analysis",
+            "title": "Dataset Columns",
+            "answer": f"The dataset contains {len(df.columns):,} columns.",
+            "evidence": "Available columns: " + ", ".join(map(str, df.columns)),
+            "table": pd.DataFrame({"Column": list(df.columns), "Data Type": [str(x) for x in df.dtypes]}),
+            "note": "Column count and types are calculated from the uploaded data."
+        }
+
+    if any(x in normalized_q for x in ["missing", "null values", "nulls", "incomplete data"]):
+        missing = df.isna().sum().sort_values(ascending=False)
+        missing = missing[missing > 0]
+        if missing.empty:
+            return {
+                "mode": "analysis", "title": "Missing Values",
+                "answer": "No missing values were detected.",
+                "evidence": f"All {len(df.columns):,} columns contain complete values.",
+                "table": None, "note": "Calculated from the uploaded dataframe."
+            }
+        table = missing.rename("Missing Values").reset_index()
+        table.columns = ["Column", "Missing Values"]
+        return {
+            "mode": "analysis", "title": "Missing Values",
+            "answer": f"{int(missing.sum()):,} missing cells were found across {len(missing):,} columns.",
+            "evidence": "The table identifies columns containing missing values.",
+            "table": table, "note": "Calculated directly from the uploaded data."
+        }
+
+    if "duplicate" in normalized_q:
+        duplicate_count = int(df.duplicated().sum())
+        return {
+            "mode": "analysis", "title": "Duplicate Records",
+            "answer": "No exact duplicate rows were detected." if duplicate_count == 0 else f"{duplicate_count:,} exact duplicate rows were detected.",
+            "evidence": f"The dataframe contains {duplicate_count:,} exact duplicate rows.",
+            "table": None, "note": "This checks complete-row duplicates."
+        }
+
+    # ------------------------------------------------------
+    # Fallback: expose real available dimensions and metrics.
+    # ------------------------------------------------------
+    available_dimensions = [str(c) for c in categorical_columns[:12]]
+    available_metrics = [str(c) for c in numeric_columns[:12]]
+    return {
+        "mode": "analysis",
+        "title": "Question Needs Clarification",
+        "answer": "I could not identify a reliable calculation for that question from the uploaded data.",
+        "evidence": (
+            "Available business dimensions: " + (", ".join(available_dimensions) if available_dimensions else "None") +
+            ". Available numeric metrics: " + (", ".join(available_metrics) if available_metrics else "None") + "."
+        ),
+        "table": None,
+        "note": (
+            "Try a question such as: 'Which department has the highest attrition?', "
+            "'Which job role has the highest average monthly income?', "
+            "'What is the average monthly income by department?', or "
+            "'Which department has the most employees?'"
+        )
+    }
+
+
+def _render_real_user_analysis(st, df):
+
+    st.markdown("## 🎯 User Analysis / Prediction Request")
+    st.write(
+        "Ask a question about the uploaded dataset. "
+        "The answer below is calculated from the current data."
+    )
+
+    if "real_user_request" not in st.session_state:
+        st.session_state["real_user_request"] = ""
+
+    if "real_user_result" not in st.session_state:
+        st.session_state["real_user_result"] = None
+
+    # ======================================================
+    # DATASET-SPECIFIC DEFAULT QUESTIONS
+    # ======================================================
+    suggested_questions = generate_data_questions(df)
+
+    st.markdown("### 💡 Suggested Questions")
+    st.caption(
+        "Choose a question below, or type your own question. "
+        "The questions are generated from this dataset."
+    )
+
+    def choose_question(question):
+        st.session_state["real_user_request"] = question
+        try:
+            st.session_state["real_user_result"] = _answer_user_request(df, question, None)
+        except Exception as exc:
+            st.session_state["real_user_result"] = {
+                "mode": "analysis",
+                "title": "Question processing error",
+                "answer": "I could not calculate the answer for this question.",
+                "evidence": str(exc),
+                "table": None,
+                "note": "Please try the question again or type it manually."
+            }
+
+    for i in range(0, len(suggested_questions), 2):
+        cols = st.columns(2)
+        for j, col in enumerate(cols):
+            idx = i + j
+            if idx >= len(suggested_questions):
+                continue
+            with col:
+                st.button(
+                    suggested_questions[idx],
+                    key=f"suggested_question_{idx}",
+                    use_container_width=True,
+                    on_click=choose_question,
+                    args=(suggested_questions[idx],)
+                )
+
+    # ======================================================
+    # USER QUESTION
+    # ======================================================
+    st.markdown("### ✍️ Ask Your Own Question")
+
+    request = st.text_input(
+        "What would you like to analyse or predict?",
+        key="real_user_request",
+        placeholder="e.g. Which department has highest attrition?"
+    )
+
+    target_options = ["Auto-detect"] + [str(c) for c in df.columns]
+
+    selected_target = st.selectbox(
+        "🎯 Target / Dimension (Optional)",
+        target_options,
+        key="real_user_target"
+    )
+
+    target = None if selected_target == "Auto-detect" else selected_target
+
+    if st.button(
+        "🔎 Analyse My Request",
+        type="primary",
+        use_container_width=True
+    ):
+        if not request.strip():
+            st.warning("Please select a suggested question or type your own question.")
+        else:
+            try:
+                st.session_state["real_user_result"] = _answer_user_request(df, request, target)
+            except Exception as exc:
+                st.session_state["real_user_result"] = {
+                    "mode": "analysis",
+                    "title": "Question processing error",
+                    "answer": "I could not calculate the answer for this question.",
+                    "evidence": str(exc),
+                    "table": None,
+                    "note": "Please check the question and column name, then try again."
+                }
+
+    result = st.session_state.get("real_user_result")
+
+    if result:
+        st.markdown("---")
+        st.markdown("## 🎯 User-Requested Analysis")
+        st.write(f"**Your request:** {request}")
+        st.write(f"**Detected Mode:** 📊 {result['mode'].title()}")
+
+        if target:
+            st.write(f"**Target / Dimension:** `{target}`")
+
+        st.markdown("### ✅ Exact Answer")
+        st.success(result["answer"])
+
+        st.markdown("### 📊 Evidence from Your Data")
+        st.info(result["evidence"])
+
+        if result.get("table") is not None:
+            st.dataframe(
+                result["table"],
+                use_container_width=True,
+                hide_index=True
+            )
+
+        st.caption(result["note"])
+
+    # ======================================================
+    # COMMON DATASET PROBLEMS — calculated from df
+    # ======================================================
+    st.markdown("## 📊 Common Dataset Problems")
+    st.caption(
+        "These statuses are calculated from the uploaded dataset. Nothing is hard-coded."
+    )
+
+    cards = []
+
+    missing_cells = int(df.isna().sum().sum())
+    missing_cols = int((df.isna().sum() > 0).sum())
+
+    if missing_cells == 0:
+        cards.append((
+            "🟢",
+            "No Problem Detected — Missing / Incomplete Data",
+            f"0 missing cells across {len(df.columns)} columns."
+        ))
+    else:
+        cards.append((
+            "🔴",
+            "Problem Detected — Missing / Incomplete Data",
+            f"{missing_cells:,} missing cells across {missing_cols:,} columns."
+        ))
+
+    duplicates = int(df.duplicated().sum())
+
+    if duplicates == 0:
+        cards.append((
+            "🟢",
+            "No Problem Detected — Duplicate Records",
+            "0 exact duplicate rows detected."
+        ))
+    else:
+        cards.append((
+            "🔴",
+            "Problem Detected — Duplicate Records",
+            f"{duplicates:,} exact duplicate rows detected."
+        ))
+
+    for icon, title, description in cards:
+        st.markdown(f"### {icon} {title}")
+        st.write(description)
+
+# ==========================================================
+# ASK DATA
+# ==========================================================
+
+with tabs[6]:
+
+    st.markdown(
+        '<div class="section-title">'
+        '🤖 AI Data Analyst'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.write(
+        "Use this section for your own questions, analysis requests "
+        "and prediction requests. Automatic business recommendations "
+        "are kept separate in the Recommendations tab."
+    )
+
+    if (
+        df is not None
+        and not df.empty
+    ):
+
+        _render_real_user_analysis(
+            st,
+            df
+        )
+
+    else:
+
+        st.info(
+            "Upload a dataset first to use the AI Data Analyst."
+        )
+
+
+# ==========================================================
+# FAST REPORT CACHE HELPERS
+# ==========================================================
+
+def _fast_dataframe_signature(dataframe):
+    """Create a stable, content-aware signature for report caching."""
+    if dataframe is None:
+        return "no-data"
+
+    h = hashlib.sha256()
+    h.update(str(dataframe.shape).encode("utf-8"))
+    h.update(json.dumps([str(c) for c in dataframe.columns]).encode("utf-8"))
+    h.update(json.dumps([str(t) for t in dataframe.dtypes]).encode("utf-8"))
+    try:
+        h.update(pd.util.hash_pandas_object(dataframe, index=True).values.tobytes())
+    except Exception:
+        h.update(dataframe.to_csv(index=True).encode("utf-8", errors="ignore"))
+    return h.hexdigest()[:24]
+
+
+def _fast_json_signature(payload):
+    """Hash JSON-compatible report configuration/content."""
+    try:
+        raw = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+    except Exception:
+        raw = repr(payload)
+    return hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:24]
+
+
+def _build_report_cache_signature(dataframe, sheets, questions, dashboard_url, report_sections=None, selected_dashboard_sheets=None, multi_file_analysis=None):
+    """Create a signature that changes whenever report content selection changes."""
+    sheet_payload = []
+    for sheet in sheets or []:
+        charts = []
+        for chart in sheet.get("charts", []) or []:
+            charts.append({
+                "category": chart.get("category"),
+                "metric": chart.get("metric"),
+                "chart_type": chart.get("chart_type", "Bar"),
+                "color": chart.get("color", "#22D3EE"),
+                "title": chart.get("title", "Business Chart"),
+                "position": chart.get("position", 999),
+            })
+        sheet_payload.append({
+            "name": sheet.get("name"),
+            "description": sheet.get("description"),
+            "charts": charts,
+        })
+
+    multi_payload = None
+    if isinstance(multi_file_analysis, dict):
+        multi_payload = {
+            "file_count": multi_file_analysis.get("file_count", 0),
+            "pair_count": multi_file_analysis.get("pair_count", 0),
+            "compatible_schema": multi_file_analysis.get("compatible_schema", False),
+            "pair_rows": multi_file_analysis.get("pair_rows", []),
+            "errors": multi_file_analysis.get("errors", []),
+        }
+
+    return _fast_json_signature({
+        "data": _fast_dataframe_signature(dataframe),
+        "sheets": sheet_payload,
+        "questions": questions or [],
+        "insights": st.session_state.get("insights"),
+        "recommendations": st.session_state.get("recommendations", []),
+        "research_result": st.session_state.get("research_result"),
+        "research_sources": st.session_state.get("research_sources", []),
+        "basic_data_explanation": st.session_state.get("basic_data_explanation"),
+        "real_user_result": st.session_state.get("real_user_result"),
+        "dashboard_url": dashboard_url,
+        "report_sections": report_sections or [],
+        "selected_dashboard_sheets": selected_dashboard_sheets or [],
+        "multi_file_analysis": multi_payload,
+    })
+
+
+# ==========================================================
+# FINAL REPORT
+# ==========================================================
+
+with tabs[7]:
+
+    st.markdown(
+        '<div class="section-title">'
+        '📄 Final Business Report'
+        '</div>',
+        unsafe_allow_html=True
+    )
+
+    st.write(
+        "Choose exactly which parts of the current Streamlit workspace should "
+        "appear in the PDF. Only the sections and dashboard sheets selected "
+        "below are sent to the report generator."
+    )
+
+    report_section_options = [
+        "Executive Overview",
+        "Complete Dashboard",
+        "Multi-File Correlation",
+        "Statistical Analysis",
+        "Business Insights",
+        "Domain Research",
+        "Management Focus Questions",
+        "Recommendations & Development Opportunities",
+        "Ask Data / User Analysis",
+        "Data Quality & Final Management Takeaway",
+        "Interactive Dashboard Link",
+    ]
+
+    if "report_sections" not in st.session_state:
+        st.session_state.report_sections = []
+
+    selected_report_sections = st.multiselect(
+        "✅ Select information for the final PDF",
+        report_section_options,
+        default=st.session_state.report_sections,
+        key="report_sections",
+        help="Select only the Streamlit sections you want in the final report. Leave a section unselected to exclude it completely.",
+    )
+
+    dashboard_sheet_names = [
+        str(sheet.get("name", f"Dashboard Sheet {idx + 1}"))
+        for idx, sheet in enumerate(st.session_state.sheets or [])
+    ]
+
+    selected_dashboard_sheets = []
+    if "Complete Dashboard" in selected_report_sections:
+        default_sheets = st.session_state.get("report_dashboard_sheets") or dashboard_sheet_names
+        default_sheets = [name for name in default_sheets if name in dashboard_sheet_names]
+
+        selected_dashboard_sheets = st.multiselect(
+            "📊 Dashboard sheets to include",
+            dashboard_sheet_names,
+            default=default_sheets,
+            key="report_dashboard_sheets",
+            help="Select which generated dashboard sheets should be embedded in the PDF.",
+        )
+    else:
+        st.session_state.report_dashboard_sheets = []
+        st.info("Select 'Complete Dashboard' above to choose individual dashboard sheets.")
+
+    total_charts_available = sum(
+        len(sheet.get("charts", []))
+        for sheet in st.session_state.sheets or []
+    )
+    selected_chart_count = sum(
+        len(sheet.get("charts", []))
+        for sheet in st.session_state.sheets or []
+        if str(sheet.get("name", "")) in selected_dashboard_sheets
+    )
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Selected PDF Sections", len(selected_report_sections))
+    c2.metric("Dashboard Sheets Selected", len(selected_dashboard_sheets))
+    c3.metric("Dashboard Charts Selected", selected_chart_count if "Complete Dashboard" in selected_report_sections else 0)
+
+    if selected_report_sections:
+        st.success(
+            "Selected for PDF: " + ", ".join(selected_report_sections)
+        )
+    else:
+        st.warning("Select at least one section before generating the final PDF.")
+
+    report_preview = []
+    if selected_report_sections:
+        for section in report_section_options:
+            if section in selected_report_sections:
+                report_preview.append(f"✅ {section}")
+        if "Complete Dashboard" in selected_report_sections:
+            report_preview.append(
+                "   ↳ Sheets: " + (", ".join(selected_dashboard_sheets) if selected_dashboard_sheets else "None")
+            )
+
+    if report_preview:
+        with st.expander("👀 Preview exactly what will be included", expanded=True):
+            for item in report_preview:
+                st.write(item)
+
+    generate_report_clicked = st.button(
+        "📄 Generate Final PDF Report",
+        type="primary",
+        use_container_width=True,
+        disabled=not bool(selected_report_sections),
+        key="generate_selected_final_pdf",
+    )
+
+    if generate_report_clicked:
+
+        if "Complete Dashboard" in selected_report_sections and not selected_dashboard_sheets:
+            st.error("Select at least one dashboard sheet because 'Complete Dashboard' is selected.")
+            st.stop()
+
+        reports_dir = REPORTS_DIR
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        pdf_path = reports_dir / "automated_bi_report.pdf"
+
+        try:
+            _save_dashboard_snapshot(df, st.session_state.sheets)
+
+            dashboard_url = _get_dashboard_url()
+
+            cached_questions = st.session_state.get("pdf_questions")
+            if isinstance(cached_questions, list):
+                pdf_questions = cached_questions
+            else:
+                pdf_questions = []
+                seen_pdf_questions = set()
+
+                for question in generate_data_questions(df):
+                    question_text = re.sub(r"\s+", " ", str(question)).strip()
+                    if not question_text:
+                        continue
+                    question_key = question_text.lower()
+                    if question_key in seen_pdf_questions:
+                        continue
+                    seen_pdf_questions.add(question_key)
+
+                    try:
+                        answer_result = _answer_user_request(df, question_text, None)
+                    except Exception as question_error:
+                        answer_result = {
+                            "mode": "analysis",
+                            "title": "Answer could not be calculated",
+                            "answer": "The question could not be reliably calculated from the uploaded data.",
+                            "evidence": str(question_error),
+                            "table": None,
+                            "note": "The question is retained because it is part of the generated Ask Data set.",
+                        }
+
+                    pdf_questions.append({
+                        "question": question_text,
+                        "answer": answer_result.get("answer", "") if isinstance(answer_result, dict) else str(answer_result or ""),
+                        "evidence": answer_result.get("evidence", "") if isinstance(answer_result, dict) else "",
+                        "note": answer_result.get("note", "") if isinstance(answer_result, dict) else "",
+                        "answerable": bool(
+                            isinstance(answer_result, dict)
+                            and answer_result.get("answer")
+                            and "could not identify a reliable calculation" not in str(answer_result.get("answer", "")).lower()
+                        ),
+                    })
+
+                st.session_state.pdf_questions = pdf_questions
+
+            report_signature = _build_report_cache_signature(
+                df,
+                st.session_state.sheets,
+                pdf_questions,
+                dashboard_url,
+                report_sections=selected_report_sections,
+                selected_dashboard_sheets=selected_dashboard_sheets,
+                multi_file_analysis=st.session_state.get("uploaded_files_analysis"),
+            )
+
+            cache_meta_path = reports_dir / "report_cache_signature.json"
+            cached_signature = None
+            try:
+                if cache_meta_path.exists():
+                    cached_signature = json.loads(cache_meta_path.read_text(encoding="utf-8")).get("signature")
+            except Exception:
+                cached_signature = None
+
+            pdf_is_ready = pdf_path.exists() and pdf_path.stat().st_size > 0
+
+            if not (pdf_is_ready and cached_signature == report_signature):
+                generate_pdf(
+                    str(pdf_path),
+                    df,
+                    kpis,
+                    st.session_state.sheets,
+                    st.session_state.insights,
+                    st.session_state.recommendations,
+                    pdf_questions,
+                    st.session_state.get("research_result"),
+                    st.session_state.get("research_sources", []),
+                    st.session_state.get("basic_data_explanation"),
+                    st.session_state.get("real_user_result"),
+                    dashboard_url,
+                    report_sections=selected_report_sections,
+                    selected_dashboard_sheets=selected_dashboard_sheets,
+                    multi_file_analysis=st.session_state.get("uploaded_files_analysis"),
+                )
+
+                cache_meta_path.write_text(
+                    json.dumps({
+                        "signature": report_signature,
+                        "pdf": str(pdf_path.name),
+                        "report_sections": selected_report_sections,
+                        "selected_dashboard_sheets": selected_dashboard_sheets,
+                    }, indent=2),
+                    encoding="utf-8",
+                )
+
+            st.session_state.report_cache_signature = report_signature
+            st.session_state.report_cache_path = str(pdf_path)
+
+            with open(pdf_path, "rb") as file:
+                st.download_button(
+                    "⬇️ Download Final PDF",
+                    data=file,
+                    file_name="automated_bi_report.pdf",
+                    mime="application/pdf",
+                    key="download_selected_final_pdf",
+                )
+
+            # ======================================================
+            # SEND FINAL PDF BY GMAIL - SEPARATE STREAMLIT PAGE
+            # ======================================================
+            st.markdown("---")
+            st.markdown("### 📧 Send Final Report by Email")
+            st.info(
+                "Open the Gmail Report Sender page below. It uses the same "
+                "working Gmail Compose method as email_test.py."
+            )
+
+            st.page_link(
+                "pages/email_test.py",
+                label="📧 Open Gmail Report Sender",
+                icon="📧",
+                use_container_width=True,
+            )
+
+            st.caption(
+                "Generate and download the Final PDF first. Then open Gmail Report Sender, "
+                "enter the recipient email, open Gmail, attach automated_bi_report.pdf, and send it."
+            )
+
+            if pdf_is_ready and cached_signature == report_signature:
+                st.success("Final report is ready. The cached PDF was reused.")
+            else:
+                st.success("Final report generated successfully using only your selected sections.")
+
+            if "Interactive Dashboard Link" in selected_report_sections:
+                st.markdown("### 📊 Interactive Dashboard")
+                st.markdown(f"[🔗 OPEN INTERACTIVE DASHBOARD PAGE]({dashboard_url})")
+
+        except Exception as e:
+            st.error(f"Report generation error: {e}")
+
+
+# ==========================================================
+# FOOTER
+# ==========================================================
+
+st.divider()
+
+st.markdown(
+    """
+    <div style="
+        text-align:center;
+        padding:16px 8px;
+        color:#617A9F;
+        font-size:11px;
+        letter-spacing:.04em;
+    ">
+        <span style="color:#22D3EE;">◆</span>
+        DATA ANALYZER
+        <span style="color:#8B5CF6;">•</span>
+        Automated Business Intelligence
+        <span style="color:#EC4899;">•</span>
+        Data → Dashboard → Insights → Decisions
+    </div>
+    """,
+    unsafe_allow_html=True
 )
