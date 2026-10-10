@@ -113,7 +113,12 @@ from modules.report_generator import (
 # LOCAL EMAIL/PASSWORD AUTHENTICATION
 # ==========================================================
 
-from auth import create_account, login_user
+from auth import (
+    create_account,
+    login_user,
+    request_password_reset_otp,
+    reset_password_with_otp,
+)
 
 
 def _render_auth_gate():
@@ -128,7 +133,7 @@ def _render_auth_gate():
         unsafe_allow_html=True,
     )
 
-    login_tab, create_tab = st.tabs(["🔐 Login", "✨ Create Account"])
+    login_tab, create_tab, reset_tab = st.tabs(["🔐 Login", "✨ Create Account", "🔑 Forgot Password"])
 
     with login_tab:
         st.markdown("### Welcome back")
@@ -159,6 +164,83 @@ def _render_auth_gate():
                     st.rerun()
                 else:
                     st.error(result)
+
+    with reset_tab:
+        st.markdown("### 🔑 Reset your password")
+        st.info(
+            "Local OTP testing mode: the OTP is displayed in this app. "
+            "No email or external API is used. The OTP expires after 10 minutes."
+        )
+
+        with st.form("auth_request_reset_otp_form"):
+            reset_email = st.text_input(
+                "Registered Email ID",
+                placeholder="your-email@gmail.com",
+                key="auth_reset_email_input",
+            )
+            request_otp_clicked = st.form_submit_button(
+                "Generate Local OTP",
+                use_container_width=True,
+            )
+
+        if request_otp_clicked:
+            ok, message = request_password_reset_otp(reset_email)
+            if ok:
+                st.session_state["auth_reset_otp_email"] = reset_email.strip().lower()
+                st.success(message)
+            else:
+                st.error(message)
+
+        st.divider()
+        st.markdown("#### Verify OTP and choose a new password")
+
+        with st.form("auth_verify_reset_otp_form"):
+            otp = st.text_input(
+                "Six-digit OTP",
+                max_chars=6,
+                key="auth_reset_otp_input",
+            )
+            new_password = st.text_input(
+                "New Password (at least 8 characters)",
+                type="password",
+                key="auth_reset_new_password_input",
+            )
+            confirm_new_password = st.text_input(
+                "Confirm New Password",
+                type="password",
+                key="auth_reset_confirm_password_input",
+            )
+            reset_password_clicked = st.form_submit_button(
+                "Reset Password",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if reset_password_clicked:
+            otp_email = st.session_state.get("auth_reset_otp_email", "")
+            if not otp_email:
+                st.error("Please enter your registered email and generate an OTP first.")
+            elif new_password != confirm_new_password:
+                st.error("The new passwords do not match.")
+            elif len(new_password) < 8:
+                st.error("The new password must contain at least 8 characters.")
+            else:
+                ok, message = reset_password_with_otp(
+                    otp_email,
+                    otp.strip(),
+                    new_password,
+                )
+                if ok:
+                    st.success(message)
+                    st.session_state.pop("auth_reset_otp_email", None)
+                    for key in (
+                        "auth_reset_otp_input",
+                        "auth_reset_new_password_input",
+                        "auth_reset_confirm_password_input",
+                    ):
+                        st.session_state.pop(key, None)
+                else:
+                    st.error(message)
 
     with create_tab:
         st.markdown("### Create your account")
